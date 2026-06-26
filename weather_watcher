@@ -1,0 +1,106 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues")
+local request = request or http_request or (syn and syn.request)
+assert(request, "HTTP requests are not supported by this executor.")
+local WEBHOOK_URL =
+	"https://discord.com/api/webhooks/1465728135910785254/ES7lAkbpEIV3Pku2TRvhSbGMsWeUi-o3zdTlOnZ-V6NFe9MS0gFQlKLKcWaudbr6Owz3"
+local connections = {}
+local updating = {}
+local function sendWebhook(title, body, color, mention)
+	task.spawn(function()
+		local success, err = pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = HttpService:JSONEncode({
+					content = mention or "",
+					allowed_mentions = { users = { "604609802835853333" } },
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 3447003,
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+						},
+					},
+				}),
+			})
+		end)
+		if not success then
+			warn("[Weather Watcher] Webhook failed:", err)
+		end
+	end)
+end
+
+sendWebhook("👀 Weather Watcher", "✅ Weather Watcher is now online and monitoring weather events.", 0x2ECC71)
+
+local function formatTime(seconds)
+	seconds = math.max(0, math.floor(seconds))
+
+	local minutes = math.floor(seconds / 60)
+	local secs = seconds % 60
+
+	if minutes > 0 then
+		return string.format("%dm %02ds", minutes, secs)
+	end
+
+	return string.format("%ds", secs)
+end
+
+local function sendWeather(weatherName)
+	task.spawn(function()
+		local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
+
+		if endTime <= 0 then
+			return
+		end
+
+		local body =
+			string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
+
+		sendWebhook("🌦 Weather Event", body, 0x00BFFF, "<@604609802835853333>")
+
+		updating[weatherName] = nil
+	end)
+end
+local function watchWeather(weatherName)
+	local playingAttribute = weatherName .. "_Playing"
+
+	if connections[playingAttribute] then
+		return
+	end
+
+	connections[playingAttribute] = WeatherValues:GetAttributeChangedSignal(playingAttribute):Connect(function()
+		if WeatherValues:GetAttribute(playingAttribute) and not updating[weatherName] then
+			updating[weatherName] = true
+			sendWeather(weatherName)
+		end
+	end)
+
+	-- If already active when the script starts
+	if WeatherValues:GetAttribute(playingAttribute) and not updating[weatherName] then
+		updating[weatherName] = true
+		sendWeather(weatherName)
+	end
+end
+
+local function scanAttributes()
+	for attributeName in pairs(WeatherValues:GetAttributes()) do
+		local weatherName = attributeName:match("^(.*)_Playing$")
+
+		if weatherName and typeof(WeatherValues:GetAttribute(attributeName)) == "boolean" then
+			watchWeather(weatherName)
+		end
+	end
+end
+
+-- Initial scan
+scanAttributes()
+
+-- Keep watching for newly-added weather attributes
+while true do
+	task.wait(5)
+	scanAttributes()
+end
