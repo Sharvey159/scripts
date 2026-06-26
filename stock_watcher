@@ -1,0 +1,81 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+
+local WEBHOOK_URL =
+	"https://discord.com/api/webhooks/1465728135910785254/ES7lAkbpEIV3Pku2TRvhSbGMsWeUi-o3zdTlOnZ-V6NFe9MS0gFQlKLKcWaudbr6Owz3"
+
+local function sendWebhook(title, body, color, mention)
+	task.spawn(function()
+		pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = game:GetService("HttpService"):JSONEncode({
+					content = mention or "",
+					allowed_mentions = {
+						users = {
+							"604609802835853333",
+						},
+					},
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 3447003,
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+						},
+					},
+				}),
+			})
+		end)
+	end)
+end
+
+local function UpdateStocks(snapshot)
+	if not snapshot or not snapshot.entries then
+		return
+	end
+
+	local fruits = {}
+	local lines = {}
+	local mention = nil
+
+	for fruitName, info in pairs(snapshot.entries) do
+		table.insert(fruits, {
+			Name = fruitName,
+			Multiplier = info.multiplier or 1,
+			Tier = info.tier or "normal",
+		})
+	end
+
+	table.sort(fruits, function(a, b)
+		return a.Multiplier > b.Multiplier
+	end)
+
+	for _, fruit in ipairs(fruits) do
+		table.insert(lines, string.format("%-20s x%.2f (%s)", fruit.Name, fruit.Multiplier, fruit.Tier))
+
+		-- Ping when Venom Spitter reaches 4x+
+		if fruit.Name == "Venom Spitter" and fruit.Multiplier >= 4 then
+			mention = "<@604609802835853333>"
+			break
+		end
+	end
+
+	local body = "```" .. table.concat(lines, "\n") .. "```"
+
+	sendWebhook("🍎  Fruit Stock Update", body, 3447003, mention)
+end
+
+-- Initial request
+local success, snapshot = pcall(function()
+	return Networking.FruitStock.Request:Fire()
+end)
+
+if success then
+	UpdateStocks(snapshot)
+end
+
+-- Listen for updates
+Networking.FruitStock.Snapshot.OnClientEvent:Connect(UpdateStocks)
