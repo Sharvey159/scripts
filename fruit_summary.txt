@@ -32,7 +32,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Fruit Summary v2"
+title.Text = "Fruit Summary"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -192,8 +192,6 @@ local function AnalyzeMyFruits()
 	local weightRanges = {}
 	local allFruits = {}
 
-	print("----------- Fruits -----------")
-
 	for _, plant in ipairs(myPlot.Plants:GetChildren()) do
 		local fruits = plant:FindFirstChild("Fruits")
 
@@ -214,8 +212,6 @@ local function AnalyzeMyFruits()
 
 				weight = tonumber(weight) or 0
 
-				print(string.format("%s - %.2fkg - %s", name, weight, mutation))
-
 				mutationCounts[mutation] = (mutationCounts[mutation] or 0) + 1
 
 				local bucket = math.floor(weight / 10) * 10
@@ -230,16 +226,17 @@ local function AnalyzeMyFruits()
 		end
 	end
 
-	print("")
-	print("------ Mutation Summary ------")
+	table.sort(allFruits, function(a, b)
+		return a.Weight > b.Weight
+	end)
+
+	local text = ""
+
+	text ..= "------ Mutation Summary ------\n"
 
 	local mutations = {}
-
 	for mutation, count in pairs(mutationCounts) do
-		table.insert(mutations, {
-			Name = mutation,
-			Count = count,
-		})
+		table.insert(mutations, {Name = mutation, Count = count})
 	end
 
 	table.sort(mutations, function(a, b)
@@ -247,14 +244,12 @@ local function AnalyzeMyFruits()
 	end)
 
 	for _, info in ipairs(mutations) do
-		print(string.format("%-15s %dx", info.Name, info.Count))
+		text ..= string.format("%-15s %dx\n", info.Name, info.Count)
 	end
 
-	print("")
-	print("------ Weight Distribution ------")
+	text ..= "\n------ Weight Distribution ------\n"
 
 	local buckets = {}
-
 	for bucket in pairs(weightRanges) do
 		table.insert(buckets, bucket)
 	end
@@ -262,29 +257,26 @@ local function AnalyzeMyFruits()
 	table.sort(buckets)
 
 	for _, bucket in ipairs(buckets) do
-		print(string.format("%2d-%2dkg : %dx", bucket, bucket + 10, weightRanges[bucket]))
+		text ..= string.format("%d-%dkg : %dx\n",
+			bucket,
+			bucket + 10,
+			weightRanges[bucket]
+		)
 	end
 
-	table.sort(allFruits, function(a, b)
-		return a.Weight > b.Weight
-	end)
-
-	print("")
-	print("------ Fruits Sorted by Weight ------")
+	text ..= "\n------ Fruits Sorted by Weight ------\n"
 
 	for i, fruit in ipairs(allFruits) do
-		print(string.format("%3d. %6.2fkg | %-18s | %s", i, fruit.Weight, fruit.Name, fruit.Mutation))
+		text ..= string.format("%3d. %6.2fkg | %-18s | %s\n",
+			i,
+			fruit.Weight,
+			fruit.Name,
+			fruit.Mutation
+		)
 	end
 
-	return {
-		Plot = myPlot,
-		Fruits = allFruits,
-		MutationCounts = mutationCounts,
-		WeightRanges = weightRanges,
-	}
+	return text
 end
-
--- Run it
 
 ---------------------------------------------------
 -- Send webhook
@@ -293,15 +285,9 @@ end
 send.MouseButton1Click:Connect(function()
 	send.Text = "Sending..."
 
-	local data = AnalyzeMyFruits()
+	local text = AnalyzeMyFruits()
 
-	local text = ""
-
-	for i, fruit in ipairs(data.Fruits) do
-		text ..= string.format("%d. %s - %.2fkg (%s)\n", i, fruit.Name, fruit.Weight, fruit.Mutation)
-	end
-
-	sendWebhook("Fruit Summary", text, 3447003)
+	sendWebhook("Fruit Summary", "```"..text.."```", 3447003)
 
 	task.wait(0.5)
 	send.Text = "Send Webhook"
