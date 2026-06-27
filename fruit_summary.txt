@@ -7,7 +7,7 @@ local lp = player
 local FruitVisualizerController = require(lp.PlayerScripts.Controllers.FruitVisualizerController)
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "WebhookPanel"
+gui.Name = "FruitSummary"
 gui.ResetOnSpawn = false
 gui.Parent = player:WaitForChild("PlayerGui")
 
