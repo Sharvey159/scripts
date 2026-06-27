@@ -228,10 +228,7 @@ end
 sendButton.MouseButton1Click:Connect(function()
 	sendButton.Text = "Sending..."
 
-	sendButton.MouseButton1Click:Connect(function()
-		sendWebhook("Fruit Summary", buildWebhookText(), 3447003)
-	end)
-
-	task.wait(0.5)
+	sendWebhook("Fruit Summary", buildWebhookText(), 3447003)
+	
 	sendButton.Text = "Send Webhook"
 end)
