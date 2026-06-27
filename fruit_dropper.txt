@@ -525,6 +525,21 @@ local function doScan(favouriteFilter, btn, label)
 	local char = lp.Character
 	local fruits = {}
 	local containers = {}
+
+	local FruitStockMultipliers = {}
+
+	local success, snapshot = pcall(function()
+		return Networking.FruitStock.Request:Fire()
+	end)
+
+	if success and snapshot and snapshot.entries then
+		table.clear(FruitStockMultipliers)
+
+		for fruitName, info in pairs(snapshot.entries) do
+			FruitStockMultipliers[fruitName] = info.multiplier or 1
+		end
+	end
+
 	if bp then
 		table.insert(containers, bp)
 	end
@@ -558,7 +573,10 @@ local function doScan(favouriteFilter, btn, label)
 			return Networking.NPCS.GetFruitBid:Fire(entry.id)
 		end)
 		if ok and result then
-			entry.value = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+			local currentValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+
+			local multiplier = FruitStockMultipliers[entry.name] or 1
+			entry.value = currentValue / multiplier
 		end
 		entry.tierIdx = getTierIndex(entry.value)
 		task.wait(0.1)
@@ -631,7 +649,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 	end)
 
 	-- Allow going slightly over the target (in millions)
-	local ALLOWED_THRESHOLD = 1 -- 1M
+	local ALLOWED_THRESHOLD = 3 -- 1M
 
 	local queue = {}
 	local total = 0
