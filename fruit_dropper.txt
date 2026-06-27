@@ -517,80 +517,56 @@ end
 -- SCAN HELPER
 -- =====================
 local function doScan(favouriteFilter, btn, label)
-	btn.Text = "Scanning..."
-	btn.TextColor3 = C.muted
-	btn.Active = false
+    btn.Text = "Scanning..."
+    btn.TextColor3 = C.muted
+    btn.Active = false
 
-	local bp = lp:FindFirstChildOfClass("Backpack")
-	local char = lp.Character
-	local fruits = {}
-	local containers = {}
+    local bp = lp:FindFirstChildOfClass("Backpack")
+    local char = lp.Character
+    local fruits = {}
+    local containers = {}
+    if bp then table.insert(containers, bp) end
+    if char then table.insert(containers, char) end
 
-	local FruitStockMultipliers = {}
+    for _, container in ipairs(containers) do
+        for _, item in ipairs(container:GetChildren()) do
+            local fav = item:GetAttribute("IsFavorite") or false
+            if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
+                if fav == favouriteFilter then
+                    table.insert(fruits, {
+                        id       = item:GetAttribute("Id"),
+                        name     = item:GetAttribute("FruitName") or item.Name,
+                        mutation = item:GetAttribute("Mutation") or "",
+                        kg       = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
+                        favorite = fav,
+                        value    = 0,
+                        tierIdx  = nil,
+                    })
+                end
+            end
+        end
+    end
 
-	local success, snapshot = pcall(function()
-		return Networking.FruitStock.Request:Fire()
-	end)
+    local total = #fruits
+    for i, entry in ipairs(fruits) do
+        btn.Text = string.format("Scanning %d/%d...", i, total)
+        local ok, result = pcall(function()
+            return Networking.NPCS.GetFruitBid:Fire(entry.id)
+        end)
+        if ok and result then
+            entry.value = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+        end
+        entry.tierIdx = getTierIndex(entry.value)
+        task.wait(0.1)
+    end
 
-	if success and snapshot and snapshot.entries then
-		table.clear(FruitStockMultipliers)
-
-		for fruitName, info in pairs(snapshot.entries) do
-			FruitStockMultipliers[fruitName] = info.multiplier or 1
-		end
-	end
-
-	if bp then
-		table.insert(containers, bp)
-	end
-	if char then
-		table.insert(containers, char)
-	end
-
-	for _, container in ipairs(containers) do
-		for _, item in ipairs(container:GetChildren()) do
-			local fav = item:GetAttribute("IsFavorite") or false
-			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
-				if fav == favouriteFilter then
-					table.insert(fruits, {
-						id = item:GetAttribute("Id"),
-						name = item:GetAttribute("FruitName") or item.Name,
-						mutation = item:GetAttribute("Mutation") or "",
-						kg = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
-						favorite = fav,
-						value = 0,
-						tierIdx = nil,
-					})
-				end
-			end
-		end
-	end
-
-	local total = #fruits
-	for i, entry in ipairs(fruits) do
-		btn.Text = string.format("Scanning %d/%d...", i, total)
-		local ok, result = pcall(function()
-			return Networking.NPCS.GetFruitBid:Fire(entry.id)
-		end)
-		if ok and result then
-			local currentValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
-
-			local multiplier = FruitStockMultipliers[entry.name] or 1
-			entry.value = currentValue / multiplier
-		end
-		entry.tierIdx = getTierIndex(entry.value)
-		task.wait(0.1)
-	end
-
-	table.sort(fruits, function(a, b)
-		return a.value > b.value
-	end)
-	backpackFruits = fruits
-	btn.Text = label
-	btn.TextColor3 = favouriteFilter and C.locked or C.muted
-	btn.Active = true
-	startBackpackWatch()
-	renderList()
+    table.sort(fruits, function(a,b) return a.value > b.value end)
+    backpackFruits = fruits
+    btn.Text = label
+    btn.TextColor3 = favouriteFilter and C.locked or C.muted
+    btn.Active = true
+    startBackpackWatch()
+    renderList()
 end
 
 -- =====================
