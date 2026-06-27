@@ -32,7 +32,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Fruit Summary"
+title.Text = "Fruit Summary v2"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -232,11 +232,12 @@ local function AnalyzeMyFruits()
 
 	local text = ""
 
-	text ..= "------ Mutation Summary ------\n"
+	text ..= "🧬 MUTATION SUMMARY\n"
+	text ..= "━━━━━━━━━━━━━━━━━━\n"
 
 	local mutations = {}
 	for mutation, count in pairs(mutationCounts) do
-		table.insert(mutations, {Name = mutation, Count = count})
+		table.insert(mutations, { Name = mutation, Count = count })
 	end
 
 	table.sort(mutations, function(a, b)
@@ -247,7 +248,8 @@ local function AnalyzeMyFruits()
 		text ..= string.format("%-15s %dx\n", info.Name, info.Count)
 	end
 
-	text ..= "\n------ Weight Distribution ------\n"
+	text ..= "\n⚖️ WEIGHT DISTRIBUTION\n"
+	text ..= "━━━━━━━━━━━━━━━━━━━━━━\n"
 
 	local buckets = {}
 	for bucket in pairs(weightRanges) do
@@ -257,22 +259,14 @@ local function AnalyzeMyFruits()
 	table.sort(buckets)
 
 	for _, bucket in ipairs(buckets) do
-		text ..= string.format("%d-%dkg : %dx\n",
-			bucket,
-			bucket + 10,
-			weightRanges[bucket]
-		)
+		text ..= string.format("%d-%dkg : %dx\n", bucket, bucket + 10, weightRanges[bucket])
 	end
 
-	text ..= "\n------ Fruits Sorted by Weight ------\n"
+	text ..= "\n🏆 FRUITS SORTED BY WEIGHT\n"
+	text ..= "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
 	for i, fruit in ipairs(allFruits) do
-		text ..= string.format("%3d. %6.2fkg | %-18s | %s\n",
-			i,
-			fruit.Weight,
-			fruit.Name,
-			fruit.Mutation
-		)
+		text ..= string.format("%3d. %6.2fkg | %-18s | %s\n", i, fruit.Weight, fruit.Name, fruit.Mutation)
 	end
 
 	return text
@@ -287,7 +281,7 @@ send.MouseButton1Click:Connect(function()
 
 	local text = AnalyzeMyFruits()
 
-	sendWebhook("Fruit Summary", "```"..text.."```", 3447003)
+	sendWebhook("Fruit Summary", text, 3447003)
 
 	task.wait(0.5)
 	send.Text = "Send Webhook"
