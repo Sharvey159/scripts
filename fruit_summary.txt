@@ -1,0 +1,238 @@
+--// UI
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+local gui = Instance.new("ScreenGui")
+gui.Name = "WebhookPanel"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(320, 170)
+frame.Position = UDim2.new(0.5, -160, 0.25, 0)
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.new(0, 10, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Webhook Panel"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.Parent = titleBar
+
+-- Minimize
+local minimize = Instance.new("TextButton")
+minimize.Size = UDim2.fromOffset(25, 25)
+minimize.Position = UDim2.new(1, -55, 0, 2)
+minimize.Text = "-"
+minimize.Font = Enum.Font.GothamBold
+minimize.TextSize = 18
+minimize.TextColor3 = Color3.new(1, 1, 1)
+minimize.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+minimize.Parent = titleBar
+Instance.new("UICorner", minimize)
+
+-- Close
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(25, 25)
+close.Position = UDim2.new(1, -28, 0, 2)
+close.Text = "X"
+close.Font = Enum.Font.GothamBold
+close.TextSize = 14
+close.TextColor3 = Color3.new(1, 1, 1)
+close.BackgroundColor3 = Color3.fromRGB(170, 60, 60)
+close.Parent = titleBar
+Instance.new("UICorner", close)
+
+local content = Instance.new("Frame")
+content.BackgroundTransparency = 1
+content.Position = UDim2.new(0, 10, 0, 40)
+content.Size = UDim2.new(1, -20, 1, -50)
+content.Parent = frame
+
+local send = Instance.new("TextButton")
+send.Size = UDim2.new(1, 0, 0, 40)
+send.Position = UDim2.new(0, 0, 0, 10)
+send.Text = "Send Webhook"
+send.Font = Enum.Font.GothamBold
+send.TextSize = 16
+send.TextColor3 = Color3.new(1, 1, 1)
+send.BackgroundColor3 = Color3.fromRGB(40, 120, 255)
+send.Parent = content
+Instance.new("UICorner", send)
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, 0, 0, 25)
+status.Position = UDim2.new(0, 0, 0, 60)
+status.BackgroundTransparency = 1
+status.Text = "Ready"
+status.TextColor3 = Color3.fromRGB(220, 220, 220)
+status.Font = Enum.Font.Gotham
+status.TextSize = 14
+status.Parent = content
+
+---------------------------------------------------
+-- Dragging
+---------------------------------------------------
+
+local dragging = false
+local dragInput
+local dragStart
+local startPos
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement then
+		dragInput = input
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - dragStart
+		frame.Position =
+			UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+local WEBHOOK_URL =
+	"https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
+
+local function sendWebhook(title, body, color)
+	task.spawn(function()
+		local success, err = pcall(function()
+			local response = request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+				},
+				Body = HttpService:JSONEncode({
+					username = "Fruit Logger",
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 3447003,
+							timestamp = DateTime.now():ToIsoDate(),
+						},
+					},
+				}),
+			})
+
+			if response and response.StatusCode ~= 204 and response.StatusCode ~= 200 then
+				warn("Webhook failed:", response.StatusCode, response.Body)
+			end
+		end)
+
+		if not success then
+			warn("Webhook Error:", err)
+		end
+	end)
+end
+
+---------------------------------------------------
+-- Buttons
+---------------------------------------------------
+
+local minimized = false
+
+minimize.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	content.Visible = not minimized
+
+	if minimized then
+		frame.Size = UDim2.fromOffset(320, 30)
+	else
+		frame.Size = UDim2.fromOffset(320, 170)
+	end
+end)
+
+close.MouseButton1Click:Connect(function()
+	gui:Destroy()
+end)
+
+local function buildWebhookText()
+	local lines = {}
+
+	local lines = {}
+
+	table.insert(lines, "# Fruit Summary")
+	table.insert(lines, "")
+
+	-- Total Fruits
+	table.insert(lines, ("Total Fruits: **%d**"):format(totalFruitCount))
+	table.insert(lines, "")
+
+	-- Mutation Summary
+	table.insert(lines, "## Mutation Summary")
+	for mutation, count in pairs(mutationCounts) do
+		table.insert(lines, ("• %s: %d"):format(mutation, count))
+	end
+
+	table.insert(lines, "")
+
+	-- Weight Ranges
+	table.insert(lines, "## Weight Ranges")
+	for _, range in ipairs(weightRanges) do
+		table.insert(lines, ("%s kg : %d"):format(range.label, range.count))
+	end
+
+	table.insert(lines, "")
+
+	-- Sorted Fruits
+	table.insert(lines, "## Fruits (Highest KG)")
+	for _, fruit in ipairs(sortedFruits) do
+		table.insert(lines, ("%s - %.2f kg - %s"):format(fruit.name, fruit.kg, fruit.mutation))
+	end
+
+	-- This is what gets sent to Discord
+	webhookText = table.concat(lines, "\n")
+
+	return table.concat(lines, "\n")
+end
+
+---------------------------------------------------
+-- Send webhook
+---------------------------------------------------
+
+sendButton.MouseButton1Click:Connect(function()
+	sendButton.Text = "Sending..."
+
+	sendButton.MouseButton1Click:Connect(function()
+		sendWebhook("Fruit Summary", buildWebhookText(), 3447003)
+	end)
+
+	task.wait(0.5)
+	sendButton.Text = "Send Webhook"
+end)
