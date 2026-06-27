@@ -1,10 +1,13 @@
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
-
 local player = Players.LocalPlayer
+local lp = player
+
+local FruitVisualizerController = require(lp.PlayerScripts.Controllers.FruitVisualizerController)
+
 local gui = Instance.new("ScreenGui")
-gui.Name = "Fruit Summary"
+gui.Name = "WebhookPanel"
 gui.ResetOnSpawn = false
 gui.Parent = player:WaitForChild("PlayerGui")
 
@@ -29,7 +32,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Fruit Summary"
+title.Text = "Webhook Panel"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -129,34 +132,23 @@ local WEBHOOK_URL =
 
 local function sendWebhook(title, body, color)
 	task.spawn(function()
-		local success, err = pcall(function()
-			local response = request({
+		pcall(function()
+			request({
 				Url = WEBHOOK_URL,
 				Method = "POST",
-				Headers = {
-					["Content-Type"] = "application/json",
-				},
-				Body = HttpService:JSONEncode({
-					username = "Fruit Logger",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = game:GetService("HttpService"):JSONEncode({
 					embeds = {
 						{
 							title = title,
 							description = body,
 							color = color or 3447003,
-							timestamp = DateTime.now():ToIsoDate(),
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
 						},
 					},
 				}),
 			})
-
-			if response and response.StatusCode ~= 204 and response.StatusCode ~= 200 then
-				warn("Webhook failed:", response.StatusCode, response.Body)
-			end
 		end)
-
-		if not success then
-			warn("Webhook Error:", err)
-		end
 	end)
 end
 
@@ -181,54 +173,130 @@ close.MouseButton1Click:Connect(function()
 	gui:Destroy()
 end)
 
-local function buildWebhookText()
-	local lines = {}
+local function AnalyzeMyFruits()
+	local myPlot
 
-	local lines = {}
+	for _, plot in ipairs(workspace.Gardens:GetChildren()) do
+		if plot:GetAttribute("OwnerUserId") == lp.UserId then
+			myPlot = plot
+			break
+		end
+	end
 
-	table.insert(lines, "# Fruit Summary")
-	table.insert(lines, "")
+	if not myPlot then
+		warn("Couldn't find your plot!")
+		return
+	end
 
-	-- Total Fruits
-	table.insert(lines, ("Total Fruits: **%d**"):format(totalFruitCount))
-	table.insert(lines, "")
+	local mutationCounts = {}
+	local weightRanges = {}
+	local allFruits = {}
 
-	-- Mutation Summary
-	table.insert(lines, "## Mutation Summary")
+	print("----------- Fruits -----------")
+
+	for _, plant in ipairs(myPlot.Plants:GetChildren()) do
+		local fruits = plant:FindFirstChild("Fruits")
+
+		if fruits then
+			for _, fruit in ipairs(fruits:GetChildren()) do
+				local name = fruit:GetAttribute("CorePartName") or "Unknown"
+
+				local mutation = fruit:GetAttribute("Mutation")
+				if not mutation or mutation == "" then
+					mutation = "None"
+				end
+
+				local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
+
+				if not weight and FruitVisualizerController.CalculatePlantWeight then
+					weight = FruitVisualizerController:CalculatePlantWeight(fruit)
+				end
+
+				weight = tonumber(weight) or 0
+
+				print(string.format("%s - %.2fkg - %s", name, weight, mutation))
+
+				mutationCounts[mutation] = (mutationCounts[mutation] or 0) + 1
+
+				local bucket = math.floor(weight / 10) * 10
+				weightRanges[bucket] = (weightRanges[bucket] or 0) + 1
+
+				table.insert(allFruits, {
+					Name = name,
+					Weight = weight,
+					Mutation = mutation,
+				})
+			end
+		end
+	end
+
+	print("")
+	print("------ Mutation Summary ------")
+
+	local mutations = {}
+
 	for mutation, count in pairs(mutationCounts) do
-		table.insert(lines, ("• %s: %d"):format(mutation, count))
+		table.insert(mutations, {
+			Name = mutation,
+			Count = count,
+		})
 	end
 
-	table.insert(lines, "")
+	table.sort(mutations, function(a, b)
+		return a.Count > b.Count
+	end)
 
-	-- Weight Ranges
-	table.insert(lines, "## Weight Ranges")
-	for _, range in ipairs(weightRanges) do
-		table.insert(lines, ("%s kg : %d"):format(range.label, range.count))
+	for _, info in ipairs(mutations) do
+		print(string.format("%-15s %dx", info.Name, info.Count))
 	end
 
-	table.insert(lines, "")
+	print("")
+	print("------ Weight Distribution ------")
 
-	-- Sorted Fruits
-	table.insert(lines, "## Fruits (Highest KG)")
-	for _, fruit in ipairs(sortedFruits) do
-		table.insert(lines, ("%s - %.2f kg - %s"):format(fruit.name, fruit.kg, fruit.mutation))
+	local buckets = {}
+
+	for bucket in pairs(weightRanges) do
+		table.insert(buckets, bucket)
 	end
 
-	-- This is what gets sent to Discord
-	webhookText = table.concat(lines, "\n")
+	table.sort(buckets)
 
-	return table.concat(lines, "\n")
+	for _, bucket in ipairs(buckets) do
+		print(string.format("%2d-%2dkg : %dx", bucket, bucket + 10, weightRanges[bucket]))
+	end
+
+	table.sort(allFruits, function(a, b)
+		return a.Weight > b.Weight
+	end)
+
+	print("")
+	print("------ Fruits Sorted by Weight ------")
+
+	for i, fruit in ipairs(allFruits) do
+		print(string.format("%3d. %6.2fkg | %-18s | %s", i, fruit.Weight, fruit.Name, fruit.Mutation))
+	end
+
+	return {
+		Plot = myPlot,
+		Fruits = allFruits,
+		MutationCounts = mutationCounts,
+		WeightRanges = weightRanges,
+	}
 end
+
+-- Run it
 
 ---------------------------------------------------
 -- Send webhook
 ---------------------------------------------------
 
-sendButton.MouseButton1Click:Connect(function()
-	sendButton.Text = "Sending..."
+send.MouseButton1Click:Connect(function()
+	send.Text = "Sending..."
 
-	sendWebhook("Fruit Summary", buildWebhookText(), 3447003)
-	
-	sendButton.Text = "Send Webhook"
+	local data = AnalyzeMyFruits()
+
+	sendWebhook("Fruit Summary", data, 3447003)
+
+	task.wait(0.5)
+	send.Text = "Send Webhook"
 end)
