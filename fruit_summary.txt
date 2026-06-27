@@ -4,7 +4,7 @@ local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local gui = Instance.new("ScreenGui")
-gui.Name = "WebhookPanel"
+gui.Name = "Fruit Summary"
 gui.ResetOnSpawn = false
 gui.Parent = player:WaitForChild("PlayerGui")
 
