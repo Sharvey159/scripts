@@ -1,444 +1,827 @@
--- ==========================================
--- 🍎 AUTO FRUIT DROP - COMPLETE UI & LOGIC
--- ==========================================
+-- ============================================================
+-- GAG2 Alt Picker
+-- - Auto pickup loop (DroppedItems proximity prompt)
+-- - Backpack scan with live bid prices (delivery / locked split)
+-- - Webhook send
+-- - Drop by Value (delivery mode)
+-- ============================================================
+if game:GetService("CoreGui"):FindFirstChild("GAG_AltPicker") then
+	game:GetService("CoreGui").GAG_AltPicker:Destroy()
+end
+
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
-local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
+local RS = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
-
--- Yield for networking to load
-local Networking
-pcall(function() Networking = require(RS.SharedModules.Networking) end)
+local Networking = require(RS.SharedModules.Networking)
 
 -- =====================
--- STATE & CONFIG
+-- WEBHOOK
 -- =====================
-local Config = {
-    MinValue = 3,
-    MaxValue = 999,
-    MaxDrops = 100,
-    IgnoreFavorites = true,
-    ScanBackpack = true,
-    ScanCharacter = true,
-    BatchSize = 10
-}
+local WEBHOOK_URL =
+	"https://discord.com/api/webhooks/1516489295182168187/KOAM1_xnLF-9I6Waj3PMPtKVsrk98SUUVesLI3yAVsNTTPt_CIQeRfGLLBZ3n06R2PAZ"
 
-local state = {
-    isRunning = false,
-    scanned = 0,
-    qualified = 0,
-    dropped = 0,
-    batchCount = 0,
-    logs = {}
-}
+local function sendWebhook(title, body, color)
+	task.spawn(function()
+		pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = game:GetService("HttpService"):JSONEncode({
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 3447003,
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+						},
+					},
+				}),
+			})
+		end)
+	end)
+end
 
--- Theme Colors
+-- =====================
+-- COLORS
+-- =====================
 local C = {
-    bg = Color3.fromRGB(25, 25, 30),
-    border = Color3.fromRGB(45, 45, 50),
-    text = Color3.fromRGB(255, 255, 255),
-    muted = Color3.fromRGB(150, 150, 160),
-    accent = Color3.fromRGB(90, 60, 150),
-    success = Color3.fromRGB(80, 200, 120),
-    danger = Color3.fromRGB(255, 80, 80),
-    box = Color3.fromRGB(35, 35, 40)
+	bg = Color3.fromRGB(14, 14, 20),
+	panel = Color3.fromRGB(20, 20, 28),
+	border = Color3.fromRGB(42, 42, 58),
+	accent = Color3.fromRGB(90, 210, 130),
+	accentDim = Color3.fromRGB(30, 65, 45),
+	text = Color3.fromRGB(215, 215, 228),
+	muted = Color3.fromRGB(100, 100, 120),
+	header = Color3.fromRGB(18, 18, 26),
+	danger = Color3.fromRGB(220, 80, 80),
+	dangerDim = Color3.fromRGB(70, 25, 25),
+	gold = Color3.fromRGB(255, 195, 55),
+	locked = Color3.fromRGB(255, 165, 0),
+	lockedDim = Color3.fromRGB(70, 45, 0),
 }
 
--- =====================
--- UI CREATION
--- =====================
--- Cleanup old UI
-if CoreGui:FindFirstChild("AutoFruitDropUI") then
-    CoreGui.AutoFruitDropUI:Destroy()
+local TIER_COLORS = {
+	Color3.fromRGB(160, 160, 170),
+	Color3.fromRGB(100, 200, 100),
+	Color3.fromRGB(80, 140, 255),
+	Color3.fromRGB(255, 180, 40),
+	Color3.fromRGB(180, 100, 255),
+	Color3.fromRGB(255, 60, 60),
+}
+
+local TIERS = {
+	{ label = "1-3M", min = 1, max = 3 },
+	{ label = "3-5M", min = 3, max = 5 },
+	{ label = "5-10M", min = 5, max = 10 },
+	{ label = "10-15M", min = 10, max = 15 },
+	{ label = "15-20M", min = 15, max = 20 },
+	{ label = "20M+", min = 20, max = 9999 },
+}
+
+local MUT_COLORS = {
+	Electric = Color3.fromRGB(255, 230, 80),
+	Gold = Color3.fromRGB(255, 200, 40),
+	Rainbow = Color3.fromRGB(255, 120, 220),
+	Frozen = Color3.fromRGB(120, 200, 255),
+	Bloodlit = Color3.fromRGB(200, 40, 60),
+	Starstruck = Color3.fromRGB(180, 180, 240),
+	Aurora = Color3.fromRGB(130, 220, 255),
+}
+
+local function formatVal(m)
+	if m >= 1000 then
+		return string.format("%.1fB", m / 1000)
+	elseif m >= 1 then
+		return string.format("%.2fM", m)
+	elseif m >= 0.001 then
+		return string.format("%.1fK", m * 1000)
+	else
+		return "—"
+	end
 end
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "AutoFruitDropUI"
-ScreenGui.Parent = pcall(function() return CoreGui.Name end) and CoreGui or lp:WaitForChild("PlayerGui")
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 320, 0, 520)
-MainFrame.Position = UDim2.new(0.5, -160, 0.5, -260)
-MainFrame.BackgroundColor3 = C.bg
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
-
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 8)
-UICorner.Parent = MainFrame
-
-local UIStroke = Instance.new("UIStroke")
-UIStroke.Color = C.border
-UIStroke.Thickness = 1
-UIStroke.Parent = MainFrame
-
-local Layout = Instance.new("UIListLayout")
-Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Layout.Padding = UDim.new(0, 5)
-Layout.Parent = MainFrame
-
-local Padding = Instance.new("UIPadding")
-Padding.PaddingTop = UDim.new(0, 10)
-Padding.PaddingBottom = UDim.new(0, 10)
-Padding.PaddingLeft = UDim.new(0, 15)
-Padding.PaddingRight = UDim.new(0, 15)
-Padding.Parent = MainFrame
-
--- Helper function for Labels
-local function createLabel(text, size, font, color)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = size
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = color or C.text
-    lbl.Font = font or Enum.Font.GothamMedium
-    lbl.TextSize = 14
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    return lbl
+local function getTierIndex(val)
+	for i, t in ipairs(TIERS) do
+		if val >= t.min and val < t.max then
+			return i
+		end
+	end
+	return nil
 end
-
--- --- TITLE BAR ---
-local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, 30)
-TitleBar.BackgroundTransparency = 1
-TitleBar.Parent = MainFrame
-
-local Title = createLabel("🍎 Auto Fruit Drop", UDim2.new(1, -30, 1, 0), Enum.Font.GothamBold)
-Title.Parent = TitleBar
-
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -30, 0, 0)
-CloseBtn.BackgroundTransparency = 1
-CloseBtn.Text = "✕"
-CloseBtn.TextColor3 = C.muted
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 16
-CloseBtn.Parent = TitleBar
-CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
-
-local function addDivider(parent)
-    local div = Instance.new("Frame")
-    div.Size = UDim2.new(1, 0, 0, 1)
-    div.BackgroundColor3 = C.border
-    div.BorderSizePixel = 0
-    div.Parent = parent
-end
-addDivider(MainFrame)
-
--- --- INPUT SETTINGS ---
-local function createInput(labelText, configKey)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 25)
-    row.BackgroundTransparency = 1
-    row.Parent = MainFrame
-
-    local lbl = createLabel(labelText, UDim2.new(0.6, 0, 1, 0))
-    lbl.Parent = row
-
-    local box = Instance.new("TextBox")
-    box.Size = UDim2.new(0.4, 0, 1, 0)
-    box.Position = UDim2.new(0.6, 0, 0, 0)
-    box.BackgroundColor3 = C.box
-    box.TextColor3 = C.text
-    box.Text = tostring(Config[configKey])
-    box.Font = Enum.Font.Gotham
-    box.TextSize = 13
-    box.Parent = row
-    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
-
-    box.FocusLost:Connect(function()
-        local val = tonumber(box.Text)
-        if val then
-            Config[configKey] = val
-        else
-            box.Text = tostring(Config[configKey])
-        end
-    end)
-end
-
-createInput("Min Value (M)", "MinValue")
-createInput("Max Value (M)", "MaxValue")
-createInput("Max Drops", "MaxDrops")
-addDivider(MainFrame)
-
--- --- CHECKBOXES ---
-local function createToggle(labelText, configKey)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 25)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
-    btn.Parent = MainFrame
-
-    local function updateText()
-        local check = Config[configKey] and "☑" or "☐"
-        btn.Text = string.format("%s %s", check, labelText)
-        btn.TextColor3 = Config[configKey] and C.text or C.muted
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 14
-        btn.TextXAlignment = Enum.TextXAlignment.Left
-    end
-    updateText()
-
-    btn.MouseButton1Click:Connect(function()
-        Config[configKey] = not Config[configKey]
-        updateText()
-    end)
-end
-
-createToggle("Ignore Favorites", "IgnoreFavorites")
-createToggle("Backpack", "ScanBackpack")
-createToggle("Character", "ScanCharacter")
-addDivider(MainFrame)
-
--- --- STATUS SECTION ---
-local StatusTitle = createLabel("──────── Status ────────", UDim2.new(1, 0, 0, 20), Enum.Font.Gotham, C.muted)
-StatusTitle.TextXAlignment = Enum.TextXAlignment.Center
-StatusTitle.Parent = MainFrame
-
-local StatusState = createLabel("🔴 Stopped", UDim2.new(1, 0, 0, 20), Enum.Font.GothamBold, C.danger)
-StatusState.Parent = MainFrame
-
-local CurrentItemLbl = createLabel("Waiting...", UDim2.new(1, 0, 0, 20), Enum.Font.Gotham)
-CurrentItemLbl.Parent = MainFrame
-local CurrentValLbl = createLabel("0M", UDim2.new(1, 0, 0, 20), Enum.Font.Gotham, C.success)
-CurrentValLbl.Parent = MainFrame
-
-local StatsLbl = createLabel("Scanned: 0\nQualified: 0\nDropped: 0", UDim2.new(1, 0, 0, 60), Enum.Font.Gotham)
-StatsLbl.Parent = MainFrame
-
--- Progress Bar
-local ProgBg = Instance.new("Frame")
-ProgBg.Size = UDim2.new(1, 0, 0, 15)
-ProgBg.BackgroundColor3 = C.box
-ProgBg.Parent = MainFrame
-Instance.new("UICorner", ProgBg).CornerRadius = UDim.new(1, 0)
-
-local ProgFill = Instance.new("Frame")
-ProgFill.Size = UDim2.new(0, 0, 1, 0)
-ProgFill.BackgroundColor3 = C.accent
-ProgFill.Parent = ProgBg
-Instance.new("UICorner", ProgFill).CornerRadius = UDim.new(1, 0)
-
-local ProgText = createLabel("0%", UDim2.new(1, 0, 1, 0), Enum.Font.GothamBold)
-ProgText.TextXAlignment = Enum.TextXAlignment.Center
-ProgText.TextSize = 12
-ProgText.Parent = ProgBg
-
-addDivider(MainFrame)
-
--- --- CONTROLS ---
-local ControlsFrame = Instance.new("Frame")
-ControlsFrame.Size = UDim2.new(1, 0, 0, 30)
-ControlsFrame.BackgroundTransparency = 1
-ControlsFrame.Parent = MainFrame
-
-local CLayout = Instance.new("UIListLayout")
-CLayout.FillDirection = Enum.FillDirection.Horizontal
-CLayout.HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween
-CLayout.Parent = ControlsFrame
-
-local function createBtn(text, color, parent)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0.3, 0, 1, 0)
-    btn.BackgroundColor3 = C.box
-    btn.Text = text
-    btn.TextColor3 = color
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
-    btn.Parent = parent
-    return btn
-end
-
-local StartBtn = createBtn("▶ Start", C.success, ControlsFrame)
-local StopBtn = createBtn("■ Stop", C.danger, ControlsFrame)
-local RescanBtn = createBtn("⟳ Rescan", C.text, ControlsFrame)
-
-addDivider(MainFrame)
-
--- --- LOGS ---
-local LogTitle = createLabel("Recent Logs", UDim2.new(1, 0, 0, 20), Enum.Font.GothamBold, C.muted)
-LogTitle.Parent = MainFrame
-
-local LogScroll = Instance.new("ScrollingFrame")
-LogScroll.Size = UDim2.new(1, 0, 1, -420)
-LogScroll.BackgroundTransparency = 1
-LogScroll.ScrollBarThickness = 4
-LogScroll.Parent = MainFrame
-
-local LogLayout = Instance.new("UIListLayout")
-LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
-LogLayout.Parent = LogScroll
 
 -- =====================
--- LOGIC & UPDATES
+-- UI
 -- =====================
-local function addLog(msg)
-    local lbl = createLabel("• " .. msg, UDim2.new(1, 0, 0, 18), Enum.Font.Gotham, C.muted)
-    lbl.TextSize = 12
-    lbl.Parent = LogScroll
-    
-    table.insert(state.logs, lbl)
-    if #state.logs > 10 then
-        local old = table.remove(state.logs, 1)
-        old:Destroy()
-    end
-    LogScroll.CanvasSize = UDim2.new(0, 0, 0, LogLayout.AbsoluteContentSize.Y)
+local gui = Instance.new("ScreenGui")
+gui.Name = "GAG_AltPicker"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+
+local WIN_W, WIN_H = 340, 540
+
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.new(0, WIN_W, 0, WIN_H)
+main.Position = UDim2.new(1, -360, 0.5, -270)
+main.BackgroundColor3 = C.bg
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.ClipsDescendants = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+local ms = Instance.new("UIStroke", main)
+ms.Color = C.border
+ms.Thickness = 1
+
+local function mkFrame(parent, size, pos, color, radius)
+	local f = Instance.new("Frame", parent)
+	f.Size = size
+	f.Position = pos
+	f.BackgroundColor3 = color or C.panel
+	f.BorderSizePixel = 0
+	if radius then
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, radius)
+	end
+	return f
 end
 
-local function updateUI(currentItemName, currentItemValM)
-    StatusState.Text = state.isRunning and "🟢 Running" or "🔴 Stopped"
-    StatusState.TextColor3 = state.isRunning and C.success or C.danger
-    
-    if currentItemName then
-        CurrentItemLbl.Text = currentItemName
-        CurrentValLbl.Text = string.format("%.2fM", currentItemValM)
-    end
-
-    StatsLbl.Text = string.format("Scanned: %d\nQualified: %d\nDropped: %d/%d", state.scanned, state.qualified, state.dropped, Config.MaxDrops)
-    
-    local pct = math.clamp(state.dropped / Config.MaxDrops, 0, 1)
-    ProgFill.Size = UDim2.new(pct, 0, 1, 0)
-    ProgText.Text = math.floor(pct * 100) .. "%"
+local function mkLabel(parent, text, size, pos, color, fs, bold)
+	local l = Instance.new("TextLabel", parent)
+	l.BackgroundTransparency = 1
+	l.Size = size
+	l.Position = pos
+	l.Text = text
+	l.TextColor3 = color or C.text
+	l.TextSize = fs or 10
+	l.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	return l
 end
 
-local function startAutoDrop()
-    if state.isRunning then return end
-    state.isRunning = true
-    state.scanned = 0
-    state.qualified = 0
-    state.dropped = 0
-    state.batchCount = 0
-    updateUI("Scanning...", 0)
-    addLog("Started dropping sequence.")
-
-    task.spawn(function()
-        while state.isRunning and state.dropped < Config.MaxDrops do
-            local foundAndDroppedThisCycle = false
-            local containers = {}
-            
-            if Config.ScanBackpack then table.insert(containers, lp:FindFirstChildOfClass("Backpack")) end
-            if Config.ScanCharacter and lp.Character then table.insert(containers, lp.Character) end
-
-            for _, container in ipairs(containers) do
-                if not state.isRunning or state.dropped >= Config.MaxDrops then break end
-                if not container then continue end
-
-                for _, item in ipairs(container:GetChildren()) do
-                    if not state.isRunning or state.dropped >= Config.MaxDrops then break end
-
-                    if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
-                        state.scanned += 1
-                        updateUI()
-
-                        local isFav = item:GetAttribute("IsFavorite") or false
-                        if Config.IgnoreFavorites and isFav then continue end
-
-                        local id = item:GetAttribute("Id")
-                        local itemName = item:GetAttribute("FruitName") or item.Name
-
-                        local ok, result = pcall(function()
-                            if Networking then return Networking.NPCS.GetFruitBid:Fire(id) end
-                            return nil
-                        end)
-
-                        if ok and result then
-                            local rawValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0)
-                            local valueM = rawValue / 1000000
-
-                            updateUI(itemName, valueM)
-
-                            if valueM >= Config.MinValue and valueM <= Config.MaxValue then
-                                state.qualified += 1
-                                updateUI()
-                                addLog("Promoting " .. itemName .. "...")
-
-                                pcall(function()
-                                    if Networking then Networking.Backpack.PromoteFruit:Fire(id) end
-                                end)
-
-                                local tool = nil
-                                local startT = tick()
-                                while tick() - startT < 3 and state.isRunning do
-                                    local charTool = lp.Character and lp.Character:FindFirstChild(item.Name)
-                                    local bpTool = lp:FindFirstChildOfClass("Backpack") and lp:FindFirstChildOfClass("Backpack"):FindFirstChild(item.Name)
-                                    
-                                    tool = charTool or bpTool
-                                    if tool and tool:IsA("Tool") and not tool:GetAttribute("FruitProxy") then break end
-                                    task.wait(0.1)
-                                end
-
-                                if tool then
-                                    if tool.Parent ~= lp.Character then
-                                        local humanoid = lp.Character:FindFirstChildOfClass("Humanoid")
-                                        if humanoid then
-                                            humanoid:EquipTool(tool)
-                                            task.wait(0.5)
-                                        end
-                                    end
-
-                                    pcall(function()
-                                        if Networking then Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", id) end
-                                    end)
-
-                                    state.dropped += 1
-                                    state.batchCount += 1
-                                    foundAndDroppedThisCycle = true
-                                    addLog(string.format("Dropped %s (%.2fM)", itemName, valueM))
-                                    updateUI()
-                                    
-                                    if state.batchCount >= Config.BatchSize then
-                                        CurrentItemLbl.Text = "Waiting for pickup..."
-                                        addLog("Batch limit reached. Waiting for pickup...")
-                                        local waitStart = tick()
-                                        while state.isRunning and tick() - waitStart < 60 do
-                                            local di = Workspace:FindFirstChild("DroppedItems")
-                                            if di and #di:GetChildren() == 0 then break end
-                                            task.wait(1)
-                                        end
-                                        state.batchCount = 0
-                                    end
-
-                                    break 
-                                end
-                            else
-                                addLog(string.format("Skipped %s (%.2fM)", itemName, valueM))
-                            end
-                        end
-                    end
-                end
-                if foundAndDroppedThisCycle then break end
-            end
-
-            if not foundAndDroppedThisCycle then
-                task.wait(1) 
-            end
-        end
-
-        state.isRunning = false
-        updateUI("Finished", 0)
-        addLog("Auto Drop Sequence Finished.")
-    end)
+local function mkBtn(parent, text, size, pos, bg, fg, cb)
+	local b = Instance.new("TextButton", parent)
+	b.Size = size
+	b.Position = pos
+	b.BackgroundColor3 = bg
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = fg
+	b.TextSize = 10
+	b.Font = Enum.Font.GothamBold
+	b.AutoButtonColor = false
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+	if cb then
+		b.MouseButton1Click:Connect(cb)
+	end
+	return b
 end
 
-StartBtn.MouseButton1Click:Connect(startAutoDrop)
-
-StopBtn.MouseButton1Click:Connect(function()
-    state.isRunning = false
-    addLog("Stopped by user.")
-    updateUI()
+-- Header
+local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
+mkLabel(hdr, "🎒 ALT PICKER", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+local minimised = false
+local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
+	minimised = not minimised
+	main.Size = minimised and UDim2.new(0, WIN_W, 0, 32) or UDim2.new(0, WIN_W, 0, WIN_H)
+	minBtn.Text = minimised and "□" or "—"
+end)
+mkBtn(hdr, "✕", UDim2.new(0, 24, 0, 20), UDim2.new(1, -28, 0.5, -10), C.dangerDim, C.danger, function()
+	gui:Destroy()
 end)
 
-RescanBtn.MouseButton1Click:Connect(function()
-    if not state.isRunning then
-        state.scanned = 0
-        state.qualified = 0
-        updateUI()
-        addLog("Stats reset.")
-    end
+-- Status bar
+local statusLbl = mkLabel(main, "Pickup: OFF", UDim2.new(1, -16, 0, 13), UDim2.new(0, 8, 0, 36), C.muted, 9)
+
+-- Row 1: pickup
+local pickupBtn =
+	mkBtn(main, "▶ Start Pickup", UDim2.new(1, -16, 0, 20), UDim2.new(0, 8, 0, 52), C.accentDim, C.accent, nil)
+
+-- Row 2: scan delivery | scan locked
+local scanDeliveryBtn =
+	mkBtn(main, "🔍 Scan Delivery", UDim2.new(0.5, -4, 0, 20), UDim2.new(0, 8, 0, 76), C.panel, C.muted, nil)
+local scanLockedBtn =
+	mkBtn(main, "🔒 Scan Locked", UDim2.new(0.5, -4, 0, 20), UDim2.new(0.5, 4, 0, 76), C.lockedDim, C.locked, nil)
+
+-- Row 3: webhook
+local webhookBtn = mkBtn(
+	main,
+	"📤 Send to Discord",
+	UDim2.new(1, -16, 0, 20),
+	UDim2.new(0, 8, 0, 100),
+	Color3.fromRGB(60, 40, 100),
+	C.accent,
+	nil
+)
+
+-- Row 4: Drop by Value
+local dropValFrame = mkFrame(main, UDim2.new(0.35, -4, 0, 20), UDim2.new(0, 8, 0, 124), C.panel, 4)
+Instance.new("UIStroke", dropValFrame).Color = C.border
+mkLabel(dropValFrame, "Target M:", UDim2.new(0, 36, 1, 0), UDim2.new(0, 2, 0, 0), C.muted, 8)
+local dropValInput = Instance.new("TextBox", dropValFrame)
+dropValInput.Size = UDim2.new(1, -40, 1, 0)
+dropValInput.Position = UDim2.new(0, 38, 0, 0)
+dropValInput.BackgroundTransparency = 1
+dropValInput.Text = "300"
+dropValInput.TextColor3 = C.gold
+dropValInput.TextSize = 9
+dropValInput.Font = Enum.Font.GothamBold
+dropValInput.ClearTextOnFocus = false
+dropValInput.PlaceholderText = "300"
+dropValInput.PlaceholderColor3 = C.muted
+
+local dropValBtn = mkBtn(
+	main,
+	"🎯 Drop by Value",
+	UDim2.new(0.65, -8, 0, 20),
+	UDim2.new(0.35, 4, 0, 124),
+	Color3.fromRGB(60, 35, 90),
+	Color3.fromRGB(180, 120, 255),
+	nil
+)
+
+local dropValStatusLbl = mkLabel(main, "", UDim2.new(1, -16, 0, 12), UDim2.new(0, 8, 0, 148), C.muted, 9)
+
+-- Summary
+local summaryLbl = mkLabel(main, "", UDim2.new(1, -16, 0, 13), UDim2.new(0, 8, 0, 163), C.muted, 9)
+
+-- Scroll
+local scroll = Instance.new("ScrollingFrame", main)
+scroll.Size = UDim2.new(1, -16, 0, WIN_H - 180)
+scroll.Position = UDim2.new(0, 8, 0, 178)
+scroll.BackgroundColor3 = C.panel
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.ScrollBarImageColor3 = C.border
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Instance.new("UICorner", scroll).CornerRadius = UDim.new(0, 6)
+local lay = Instance.new("UIListLayout", scroll)
+lay.Padding = UDim.new(0, 2)
+lay.SortOrder = Enum.SortOrder.LayoutOrder
+local sPad = Instance.new("UIPadding", scroll)
+sPad.PaddingLeft = UDim.new(0, 4)
+sPad.PaddingRight = UDim.new(0, 4)
+sPad.PaddingTop = UDim.new(0, 4)
+sPad.PaddingBottom = UDim.new(0, 4)
+
+-- =====================
+-- BACKPACK DATA
+-- =====================
+local backpackFruits = {} -- currently displayed list (delivery or locked)
+local currentScanMode = "delivery" -- "delivery" | "locked"
+
+-- =====================
+-- PICKUP LOOP
+-- =====================
+local picking = false
+
+pickupBtn.MouseButton1Click:Connect(function()
+	picking = not picking
+	if picking then
+		pickupBtn.Text = "⛔ Stop Pickup"
+		pickupBtn.BackgroundColor3 = C.dangerDim
+		pickupBtn.TextColor3 = C.danger
+		statusLbl.Text = "Pickup: ON — watching..."
+		statusLbl.TextColor3 = C.accent
+
+		task.spawn(function()
+			local DroppedItems = workspace:WaitForChild("DroppedItems")
+			while picking do
+				for _, item in ipairs(DroppedItems:GetChildren()) do
+					if not picking then
+						break
+					end
+					local anchor = item:FindFirstChild("PromptAnchor")
+					if anchor and item:GetAttribute("ItemCategory") == "HarvestedFruits" then
+						local prompt = anchor:FindFirstChild("PickupPrompt")
+						if prompt and prompt:IsA("ProximityPrompt") then
+							local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+							if hrp and item:IsA("Model") and item.PrimaryPart then
+								hrp.CFrame = item.PrimaryPart.CFrame + Vector3.new(0, 3, 0)
+							elseif hrp then
+								for _, part in ipairs(item:GetDescendants()) do
+									if part:IsA("BasePart") then
+										hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+										break
+									end
+								end
+							end
+							task.wait(0.1)
+							pcall(function()
+								fireproximityprompt(prompt)
+							end)
+							task.wait(0.3)
+						end
+					end
+				end
+				task.wait(0.5)
+			end
+		end)
+	else
+		picking = false
+		pickupBtn.Text = "▶ Start Pickup"
+		pickupBtn.BackgroundColor3 = C.accentDim
+		pickupBtn.TextColor3 = C.accent
+		statusLbl.Text = "Pickup: OFF"
+		statusLbl.TextColor3 = C.muted
+	end
 end)
 
-addLog("UI Loaded Successfully.")
+-- =====================
+-- SCROLL / ROW
+-- =====================
+local function clearScroll()
+	for _, c in ipairs(scroll:GetChildren()) do
+		if c:IsA("Frame") or c:IsA("TextLabel") or c:IsA("TextButton") then
+			c:Destroy()
+		end
+	end
+end
+
+local function makeRow(entry, order)
+	local baseBg = Color3.fromRGB(24, 24, 34)
+	local row = Instance.new("TextButton", scroll)
+	row.Size = UDim2.new(1, 0, 0, 28)
+	row.BackgroundColor3 = baseBg
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.LayoutOrder = order
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+
+	if entry.favorite then
+		mkLabel(row, "★", UDim2.new(0, 12, 1, 0), UDim2.new(0, 2, 0, 0), C.gold, 9, true)
+	end
+
+	local wb = mkFrame(row, UDim2.new(0, 46, 0, 18), UDim2.new(0, 16, 0.5, -9), Color3.fromRGB(28, 28, 40), 3)
+	local wl = mkLabel(
+		wb,
+		string.format("%.1f", entry.kg) .. "kg",
+		UDim2.new(1, 0, 1, 0),
+		UDim2.new(0, 0, 0, 0),
+		C.gold,
+		9,
+		true
+	)
+	wl.TextXAlignment = Enum.TextXAlignment.Center
+
+	mkLabel(row, entry.name, UDim2.new(0, 100, 1, 0), UDim2.new(0, 66, 0, 0), C.text, 9)
+
+	if entry.mutation ~= "" then
+		local mc = MUT_COLORS[entry.mutation] or C.muted
+		local mb = mkFrame(row, UDim2.new(0, 64, 0, 16), UDim2.new(1, -150, 0.5, -8), Color3.fromRGB(20, 20, 28), 3)
+		local mbs = Instance.new("UIStroke", mb)
+		mbs.Color = mc
+		mbs.Thickness = 1
+		local ml = mkLabel(mb, entry.mutation, UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), mc, 8, true)
+		ml.TextXAlignment = Enum.TextXAlignment.Center
+	end
+
+	local tc = entry.tierIdx and TIER_COLORS[entry.tierIdx] or C.muted
+	local vl = mkLabel(row, formatVal(entry.value), UDim2.new(0, 76, 1, 0), UDim2.new(1, -80, 0, 0), tc, 9, true)
+	vl.TextXAlignment = Enum.TextXAlignment.Right
+
+	local clicking = false
+	row.MouseButton1Click:Connect(function()
+		if clicking then
+			return
+		end
+		clicking = true
+		row.BackgroundColor3 = Color3.fromRGB(200, 160, 60)
+		local bp = lp:FindFirstChildOfClass("Backpack")
+		Networking.Backpack.PromoteFruit:Fire(entry.id)
+		local tool = nil
+		local startT = tick()
+		while tick() - startT < 3 do
+			task.wait(0.05)
+			if bp then
+				for _, item in ipairs(bp:GetChildren()) do
+					if
+						item:IsA("Tool")
+						and item:GetAttribute("Id") == entry.id
+						and not item:GetAttribute("FruitProxy")
+					then
+						tool = item
+						break
+					end
+				end
+			end
+			if tool then
+				break
+			end
+		end
+		if tool then
+			local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:EquipTool(tool)
+			end
+			row.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+		else
+			row.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+		end
+		task.wait(0.4)
+		row.BackgroundColor3 = baseBg
+		clicking = false
+	end)
+
+	return row
+end
+
+local function renderList()
+	clearScroll()
+	local totalVal = 0
+	for _, e in ipairs(backpackFruits) do
+		totalVal = totalVal + e.value
+	end
+	local modeLabel = currentScanMode == "locked" and "🔒 Locked" or "📦 Delivery"
+	summaryLbl.Text =
+		string.format("%s: %d fruits · ~%s · tap to equip", modeLabel, #backpackFruits, formatVal(totalVal))
+	for i, entry in ipairs(backpackFruits) do
+		makeRow(entry, i).Parent = scroll
+	end
+	if #backpackFruits == 0 then
+		local el = Instance.new("TextLabel", scroll)
+		el.BackgroundTransparency = 1
+		el.Size = UDim2.new(1, 0, 0, 30)
+		el.Text = "Nothing here"
+		el.TextColor3 = C.muted
+		el.TextSize = 9
+		el.Font = Enum.Font.GothamMedium
+		el.TextXAlignment = Enum.TextXAlignment.Center
+	end
+end
+
+-- =====================
+-- BACKPACK WATCH
+-- =====================
+local backpackWatchConn = nil
+local addedWatchConn = nil
+
+local function startBackpackWatch()
+	if backpackWatchConn then
+		pcall(function()
+			backpackWatchConn:Disconnect()
+		end)
+	end
+	if addedWatchConn then
+		pcall(function()
+			addedWatchConn:Disconnect()
+		end)
+	end
+	local bp = lp:FindFirstChildOfClass("Backpack")
+	if not bp then
+		return
+	end
+
+	backpackWatchConn = bp.ChildRemoved:Connect(function(item)
+		local id = item:GetAttribute("Id")
+		if not id then
+			return
+		end
+		task.wait(0.2)
+		for _, c in ipairs(bp:GetChildren()) do
+			if c:GetAttribute("Id") == id then
+				return
+			end
+		end
+		local char = lp.Character
+		if char then
+			for _, c in ipairs(char:GetChildren()) do
+				if c:GetAttribute("Id") == id then
+					return
+				end
+			end
+		end
+		for i, entry in ipairs(backpackFruits) do
+			if entry.id == id then
+				table.remove(backpackFruits, i)
+				renderList()
+				break
+			end
+		end
+	end)
+
+	addedWatchConn = bp.ChildAdded:Connect(function(item)
+		if item:GetAttribute("HarvestedFruit") then
+			scanDeliveryBtn.Text = "⚠️ Rescan"
+			scanDeliveryBtn.TextColor3 = C.danger
+		end
+	end)
+end
+
+-- =====================
+-- SCAN HELPER
+-- =====================
+local function doScan(favouriteFilter, btn, label)
+	btn.Text = "Scanning..."
+	btn.TextColor3 = C.muted
+	btn.Active = false
+
+	local bp = lp:FindFirstChildOfClass("Backpack")
+	local char = lp.Character
+	local fruits = {}
+	local containers = {}
+	if bp then
+		table.insert(containers, bp)
+	end
+	if char then
+		table.insert(containers, char)
+	end
+
+	for _, container in ipairs(containers) do
+		for _, item in ipairs(container:GetChildren()) do
+			local fav = item:GetAttribute("IsFavorite") or false
+			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
+				if fav == favouriteFilter then
+					table.insert(fruits, {
+						id = item:GetAttribute("Id"),
+						name = item:GetAttribute("FruitName") or item.Name,
+						mutation = item:GetAttribute("Mutation") or "",
+						kg = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
+						favorite = fav,
+						value = 0,
+						tierIdx = nil,
+					})
+				end
+			end
+		end
+	end
+
+	local total = #fruits
+	for i, entry in ipairs(fruits) do
+		btn.Text = string.format("Scanning %d/%d...", i, total)
+		local ok, result = pcall(function()
+			return Networking.NPCS.GetFruitBid:Fire(entry.id)
+		end)
+		if ok and result then
+			entry.value = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+		end
+		entry.tierIdx = getTierIndex(entry.value)
+		task.wait(0.1)
+	end
+
+	table.sort(fruits, function(a, b)
+		return a.value > b.value
+	end)
+	backpackFruits = fruits
+	btn.Text = label
+	btn.TextColor3 = favouriteFilter and C.locked or C.muted
+	btn.Active = true
+	startBackpackWatch()
+	renderList()
+end
+
+-- =====================
+-- SCAN BUTTONS
+-- =====================
+scanDeliveryBtn.MouseButton1Click:Connect(function()
+	currentScanMode = "delivery"
+	-- Reset locked button appearance
+	scanLockedBtn.BackgroundColor3 = C.lockedDim
+	scanLockedBtn.TextColor3 = C.locked
+	doScan(false, scanDeliveryBtn, "🔍 Scan Delivery")
+end)
+
+scanLockedBtn.MouseButton1Click:Connect(function()
+	currentScanMode = "locked"
+	-- Reset delivery button appearance
+	scanDeliveryBtn.BackgroundColor3 = C.panel
+	scanDeliveryBtn.TextColor3 = C.muted
+	doScan(true, scanLockedBtn, "🔒 Scan Locked")
+end)
+
+-- =====================
+-- DROP BY VALUE
+-- =====================
+local droppingByVal = false
+
+dropValBtn.MouseButton1Click:Connect(function()
+	if currentScanMode == "locked" then
+		dropValStatusLbl.Text = "⚠️ Switch to Delivery scan first"
+		return
+	end
+
+	if droppingByVal then
+		droppingByVal = false
+		dropValBtn.Text = "🎯 Drop by Value"
+		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
+		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
+		dropValStatusLbl.Text = "Cancelled"
+		return
+	end
+
+	if #backpackFruits == 0 then
+		dropValStatusLbl.Text = "⚠️ Scan delivery first"
+		return
+	end
+
+	local target = tonumber(dropValInput.Text) or 300
+	local sorted = {}
+	for _, e in ipairs(backpackFruits) do
+		if not e.favorite then
+			table.insert(sorted, e)
+		end
+	end
+	table.sort(sorted, function(a, b)
+		return a.value > b.value
+	end)
+
+	-- Allow going slightly over the target (in millions)
+	local ALLOWED_THRESHOLD = 1 -- 1M
+
+	local queue = {}
+	local total = 0
+
+	for _, e in ipairs(sorted) do
+		local newTotal = total + e.value
+
+		-- If adding this fruit keeps us under the target,
+		-- always take it.
+		if newTotal <= target then
+			table.insert(queue, e)
+			total = newTotal
+
+		-- If it goes over, only take it if we're within
+		-- the allowed threshold.
+		elseif newTotal <= target + ALLOWED_THRESHOLD then
+			table.insert(queue, e)
+			total = newTotal
+			break
+
+			-- Otherwise skip it and try a smaller fruit.
+		end
+	end
+
+	local available = 0
+	for _, e in ipairs(sorted) do
+		available += e.value
+	end
+
+	if total < target then
+		if available < target then
+			dropValStatusLbl.Text = string.format("⚠️ Only %s available (need %dM)", formatVal(available), target)
+		else
+			dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s", formatVal(total))
+		end
+		return
+	end
+
+	dropValStatusLbl.Text = string.format("Dropping %d fruits · %s", #queue, formatVal(total))
+	dropValBtn.Text = "⛔ Cancel"
+	dropValBtn.BackgroundColor3 = C.dangerDim
+	dropValBtn.TextColor3 = C.danger
+	droppingByVal = true
+
+	task.spawn(function()
+		local bp = lp:FindFirstChildOfClass("Backpack")
+		local dropped = 0
+		local batchCount = 0
+		local BATCH_SIZE = 10
+
+		local function removeFromList(id)
+			for i, entry in ipairs(backpackFruits) do
+				if entry.id == id then
+					table.remove(backpackFruits, i)
+					break
+				end
+			end
+			renderList()
+		end
+
+		local function promoteFruit(id)
+			Networking.Backpack.PromoteFruit:Fire(id)
+			local startT = tick()
+			while tick() - startT < 3 do
+				task.wait(0.05)
+				if bp then
+					for _, item in ipairs(bp:GetChildren()) do
+						if
+							item:IsA("Tool")
+							and item:GetAttribute("Id") == id
+							and not item:GetAttribute("FruitProxy")
+						then
+							return item
+						end
+					end
+				end
+			end
+			return nil
+		end
+
+		for _, entry in ipairs(queue) do
+			if not droppingByVal then
+				break
+			end
+			dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
+			local tool = promoteFruit(entry.id)
+			if not tool then
+				task.wait(0.3)
+			else
+				local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+				if hum then
+					hum:EquipTool(tool)
+				end
+				task.wait(0.5)
+				Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
+				dropped = dropped + 1
+				batchCount = batchCount + 1
+				removeFromList(entry.id)
+				task.wait(0.3)
+				if batchCount >= BATCH_SIZE then
+					dropValStatusLbl.Text = "Waiting for pickup..."
+					local waitStart = tick()
+					while droppingByVal and tick() - waitStart < 60 do
+						local di = Workspace:FindFirstChild("DroppedItems")
+						if di and #di:GetChildren() == 0 then
+							break
+						end
+						task.wait(1)
+					end
+					batchCount = 0
+				end
+			end
+		end
+
+		droppingByVal = false
+		dropValBtn.Text = "🎯 Drop by Value"
+		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
+		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
+		dropValStatusLbl.Text = string.format("✓ Dropped %d fruits · %s", dropped, formatVal(total))
+	end)
+end)
+
+-- =====================
+-- WEBHOOK
+-- =====================
+webhookBtn.MouseButton1Click:Connect(function()
+	if #backpackFruits == 0 then
+		webhookBtn.Text = "⚠️ Scan first"
+		task.wait(2)
+		webhookBtn.Text = "📤 Send to Discord"
+		return
+	end
+	webhookBtn.Text = "Sending..."
+
+	local lines = {}
+	local total = 0
+	local tierTotals = {}
+	local tierCounts = {}
+
+	for _, e in ipairs(backpackFruits) do
+		total = total + e.value
+		local tierLabel = e.tierIdx and TIERS[e.tierIdx].label or "?"
+		tierTotals[tierLabel] = (tierTotals[tierLabel] or 0) + e.value
+		tierCounts[tierLabel] = (tierCounts[tierLabel] or 0) + 1
+		local fav = e.favorite and "★ " or ""
+		table.insert(
+			lines,
+			string.format(
+				"%s%s [%s] %.1fkg — %s",
+				fav,
+				e.name,
+				e.mutation ~= "" and e.mutation or "None",
+				e.kg,
+				formatVal(e.value)
+			)
+		)
+	end
+
+	local breakdown = {}
+	for _, t in ipairs(TIERS) do
+		if tierCounts[t.label] then
+			table.insert(
+				breakdown,
+				string.format("%s: %dx · %s", t.label, tierCounts[t.label], formatVal(tierTotals[t.label]))
+			)
+		end
+	end
+
+	local modeTag = currentScanMode == "locked" and "Locked" or "Delivery"
+	local footer = "\n━━━━━━━━━━━━━━━━━━━━━━\n"
+		.. string.format("**ALT %s: %d fruits · %s**", modeTag, #backpackFruits, formatVal(total))
+		.. "\n"
+		.. table.concat(breakdown, " · ")
+
+	local CHUNK = 3800
+	local chunk = ""
+	local part = 1
+	for _, line in ipairs(lines) do
+		if #chunk + #line + 1 > CHUNK then
+			sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk, 3447003)
+			chunk = ""
+			part = part + 1
+			task.wait(0.5)
+		end
+		chunk = chunk .. line .. "\n"
+	end
+	sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk .. footer, 3447003)
+	webhookBtn.Text = "✓ Sent"
+	task.wait(2)
+	webhookBtn.Text = "📤 Send to Discord"
+end)
+
+print("[GAG2 Alt Picker] Loaded.")
