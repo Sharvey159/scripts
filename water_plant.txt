@@ -122,6 +122,30 @@ local function equipTool(toolName)
 	return tool
 end
 
+local function unequipTool()
+	local character = getCharacter()
+	local humanoid = character:FindFirstChild("Humanoid")
+
+	if not humanoid then
+		return false
+	end
+
+	humanoid:UnequipTools()
+
+	-- Wait until no Tool remains equipped (max 2 seconds)
+	local timeout = tick() + 2
+
+	repeat
+		local equipped = character:FindFirstChildWhichIsA("Tool")
+		if not equipped then
+			return true
+		end
+		task.wait()
+	until tick() > timeout
+
+	return false
+end
+
 local function waterPlant(targetQuery)
 	if isWatering then
 		return
@@ -175,7 +199,12 @@ local function waterPlant(targetQuery)
 
 	-- Small cooldown to ignore accidental double-clicks.
 	task.wait(0.5)
+
+	unequipTool()
+
 	isWatering = false
+
+
 end
 
 local function createUI()
