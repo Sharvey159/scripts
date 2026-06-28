@@ -20,7 +20,7 @@ local Networking = require(RS.SharedModules.Networking)
 -- WEBHOOK
 -- =====================
 local WEBHOOK_URL =
-	"https://discord.com/api/webhooks/1516489295182168187/KOAM1_xnLF-9I6Waj3PMPtKVsrk98SUUVesLI3yAVsNTTPt_CIQeRfGLLBZ3n06R2PAZ"
+	"https://discord.com/api/webhooks/1520692534135750778/x3d9XAM0Zp8j2MwB6D1EqYumKfZYAYjMaEIQnw2zArT2jtY7EN0Mdp6ZsvgQIpj7VOPh"
 
 local function sendWebhook(title, body, color)
 	task.spawn(function()
@@ -785,8 +785,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 				dropValStatusLbl.Text =
 					string.format("⚠️ Only %s available (need %dM)", formatVal(available), filter.value)
 			else
-				dropValStatusLbl.Text =
-					string.format("⚠️ Closest combination: %s", formatVal(total))
+				dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s", formatVal(total))
 			end
 			return
 		end
@@ -823,7 +822,8 @@ dropValBtn.MouseButton1Click:Connect(function()
 
 				if bp then
 					for _, item in ipairs(bp:GetChildren()) do
-						if item:IsA("Tool")
+						if
+							item:IsA("Tool")
 							and item:GetAttribute("Id") == id
 							and not item:GetAttribute("FruitProxy")
 						then
@@ -836,61 +836,75 @@ dropValBtn.MouseButton1Click:Connect(function()
 			return nil
 		end
 
-		while droppingByVal do
-			rebuildQueue()
-
-			if #queue == 0 then
-				break
+		local function dropEntry(entry)
+            
+			if filter.type == "target" then
+				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
+			else
+				dropValStatusLbl.Text = string.format("Dropping %d · %s", dropped + 1, formatVal(total))
 			end
-
-			local entry = queue[1]
-
-			dropValStatusLbl.Text =
-				string.format("Dropping %d · %s", dropped + 1, formatVal(total))
 
 			local tool = promoteFruit(entry.id)
 
-			if tool then
-				local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
-
-				if hum then
-					hum:EquipTool(tool)
-				end
-
-				task.wait(0.5)
-
-				Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
-
-				dropped += 1
-				batchCount += 1
-
-				removeFromList(entry.id)
-
+			if not tool then
 				task.wait(0.3)
-
-				if batchCount >= BATCH_SIZE then
-					dropValStatusLbl.Text = "Waiting for pickup..."
-
-					local waitStart = tick()
-
-					while droppingByVal and tick() - waitStart < 60 do
-						local di = Workspace:FindFirstChild("DroppedItems")
-
-						if di and #di:GetChildren() == 0 then
-							break
-						end
-
-						task.wait(1)
-					end
-
-					batchCount = 0
-				end
-			else
-				task.wait(0.3)
+				return
 			end
 
-			if filter.type == "target" then
-				break
+			local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:EquipTool(tool)
+			end
+
+			task.wait(0.5)
+
+			Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
+
+			dropped += 1
+			batchCount += 1
+
+			removeFromList(entry.id)
+
+			task.wait(0.3)
+
+			if batchCount >= BATCH_SIZE then
+				dropValStatusLbl.Text = "Waiting for pickup..."
+
+				local waitStart = tick()
+
+				while droppingByVal and tick() - waitStart < 60 do
+					local di = Workspace:FindFirstChild("DroppedItems")
+
+					if di and #di:GetChildren() == 0 then
+						break
+					end
+
+					task.wait(1)
+				end
+
+				batchCount = 0
+			end
+		end
+
+		if filter.type == "target" then
+			-- Original behaviour
+			for _, entry in ipairs(queue) do
+				if not droppingByVal then
+					break
+				end
+
+				dropEntry(entry)
+			end
+		else
+			-- Filter mode
+			while droppingByVal do
+				rebuildQueue()
+
+				if #queue == 0 then
+					break
+				end
+
+				dropEntry(queue[1])
 			end
 		end
 
@@ -900,8 +914,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
 		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
 
-		dropValStatusLbl.Text =
-			string.format("✓ Dropped %d fruits", dropped)
+		dropValStatusLbl.Text = string.format("✓ Dropped %d fruits", dropped)
 	end)
 end)
 
