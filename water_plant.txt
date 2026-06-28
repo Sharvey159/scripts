@@ -8,6 +8,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local WATERING_CAN_NAME = "Super Watering Can"
+local isWatering = false
 
 local function getCharacter()
 	return player.Character or player.CharacterAdded:Wait()
@@ -122,42 +123,59 @@ local function equipTool(toolName)
 end
 
 local function waterPlant(targetQuery)
-	local targetPlayer = findTargetPlayer(targetQuery)
-	if not targetPlayer then
-		warn("Player not found.")
+	if isWatering then
 		return
 	end
 
-	local plot = findPlotForUser(targetPlayer.UserId)
-	if not plot then
-		warn("Plot not found.")
-		return
-	end
+	isWatering = true
 
-	local plant = getFirstAvailablePlant(plot)
-	if not plant then
-		warn("No plant found.")
-		return
-	end
+	local success, err = pcall(function()
+		local targetPlayer = findTargetPlayer(targetQuery)
+		if not targetPlayer then
+			warn("Player not found.")
+			return
+		end
 
-	local position = getPlantPosition(plant)
-	if not position then
-		warn("Could not determine plant position.")
-		return
-	end
+		local plot = findPlotForUser(targetPlayer.UserId)
+		if not plot then
+			warn("Plot not found.")
+			return
+		end
 
-	local tool = equipTool(WATERING_CAN_NAME)
-	if not tool then
-		return
-	end
+		local plant = getFirstAvailablePlant(plot)
+		if not plant then
+			warn("No plant found.")
+			return
+		end
 
-	pcall(function()
+		local position = getPlantPosition(plant)
+		if not position then
+			warn("Could not determine plant position.")
+			return
+		end
+
+		local tool = equipTool(WATERING_CAN_NAME)
+		if not tool then
+			return
+		end
+
+		-- Give the server time to register the equipped tool.
+		task.wait(1)
+
 		Networking.WateringCan.UseWateringCan:Fire(
 			position,
 			WATERING_CAN_NAME,
 			tool
 		)
 	end)
+
+	if not success then
+		warn(err)
+	end
+
+	-- Small cooldown to ignore accidental double-clicks.
+	task.wait(0.5)
+	isWatering = false
 end
 
 local function createUI()
@@ -210,7 +228,27 @@ local function createUI()
 	Instance.new("UICorner", button).CornerRadius = UDim.new(0,4)
 
 	button.MouseButton1Click:Connect(function()
-		task.spawn(waterPlant, input.Text)
+	if isWatering then
+		return
+	end
+
+	button.Active = false
+	button.AutoButtonColor = false
+	button.Text = "Watering..."
+
+	task.spawn(function()
+		local ok, err = pcall(function()
+			waterPlant(input.Text)
+		end)
+
+		if not ok then
+			warn(err)
+		end
+
+			button.Text = "Water Plant"
+			button.Active = true
+			button.AutoButtonColor = true
+		end)
 	end)
 
 	local dragging
