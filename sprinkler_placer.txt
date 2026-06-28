@@ -403,6 +403,14 @@ local function createButton(parent, name, text, accentColor)
 	return button
 end
 
+local function createSmallButton(parent, name, text)
+
+	local b = createButton(parent, name, text, Color3.fromRGB(90,170,255))
+	b.Size = UDim2.new(0.5, 0, 1, 0)
+
+	return b
+end
+
 local function createPrimaryButton(parent)
 
 	local b = createButton(
@@ -623,13 +631,18 @@ local function createPlacementCard()
 
 	local card = createCard(ui.leftColumn,"Placement Settings",165)
 
-	ui.radiusSlider = createSlider(
+	local radiusSlider = createSlider(
 		card,
 		"Radius",
 		MIN_RADIUS,
 		MAX_RADIUS,
 		DEFAULT_RADIUS
 	)
+
+	ui.radiusSlider = radiusSlider
+	ui.radius = radiusSlider
+	ui.radiusLabel = radiusSlider.label
+	ui.radiusFill = radiusSlider.fill
 
 	ui.delayInput = createInput(
 		card,
@@ -1258,8 +1271,8 @@ local function setMode(newMode)
 end
 
 local function updateDelayLabel(value)
-	if ui.delayLabel then
-		ui.delayLabel.Text = "Delay: " .. formatTime(value) .. " sec"
+	if ui.delayInput then
+		ui.delayInput.Text = formatTime(value)
 	end
 end
 
@@ -1460,3 +1473,5 @@ local function stopPressed()
 	updateStatusField(ui.statusAction, "Stopping...")
 	logStatus("Stop requested.")
 end
+
+initializeUI()
