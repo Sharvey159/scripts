@@ -31,489 +31,985 @@ local currentTask
 
 local ui = {}
 
-local function createRoundedFrame(parent, name, bgColor, borderColor, borderSize)
-	local frame = Instance.new("Frame")
-	frame.Name = name
-	frame.BackgroundColor3 = bgColor
-	frame.BorderSizePixel = borderSize or 0
-	frame.BorderColor3 = borderColor or Color3.new(0, 0, 0)
-	frame.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 0.12)
-	corner.Parent = frame
-	return frame
+local function createWindow()
+    local existing = playerGui:FindFirstChild("AutoSprinklerPanel")
+    if existing then
+        existing:Destroy()
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "AutoSprinklerPanel"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 100
+    gui.Parent = playerGui
+
+    ----------------------------------------------------
+    -- Root
+    ----------------------------------------------------
+
+    local root = Instance.new("Frame")
+    root.Name = "Root"
+    root.AnchorPoint = Vector2.new(.5, .5)
+    root.Position = UDim2.fromScale(.5,.5)
+    root.Size = UDim2.fromOffset(900,620)
+    root.BackgroundColor3 = Color3.fromRGB(15,17,22)
+    root.BorderSizePixel = 0
+    root.Parent = gui
+
+    Instance.new("UICorner",root).CornerRadius = UDim.new(0,10)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(55,255,120)
+    stroke.Transparency = .8
+    stroke.Parent = root
+
+    ----------------------------------------------------
+    -- Title Bar
+    ----------------------------------------------------
+
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1,0,0,48)
+    titleBar.BackgroundColor3 = Color3.fromRGB(21,24,30)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = root
+
+    Instance.new("UICorner",titleBar).CornerRadius = UDim.new(0,10)
+
+    local divider = Instance.new("Frame")
+    divider.Size = UDim2.new(1,0,0,1)
+    divider.Position = UDim2.new(0,0,1,-1)
+    divider.BorderSizePixel = 0
+    divider.BackgroundColor3 = Color3.fromRGB(40,50,60)
+    divider.Parent = titleBar
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.fromOffset(18,0)
+    title.Size = UDim2.new(1,-140,1,0)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "AUTO SPRINKLER CONTROL"
+    title.TextSize = 18
+    title.TextColor3 = Color3.fromRGB(170,255,145)
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = titleBar
+
+    ----------------------------------------------------
+    -- Buttons
+    ----------------------------------------------------
+
+    local buttonHolder = Instance.new("Frame")
+    buttonHolder.BackgroundTransparency = 1
+    buttonHolder.AnchorPoint = Vector2.new(1,.5)
+    buttonHolder.Position = UDim2.new(1,-14,.5,0)
+    buttonHolder.Size = UDim2.fromOffset(90,32)
+    buttonHolder.Parent = titleBar
+
+    local list = Instance.new("UIListLayout")
+    list.FillDirection = Enum.FillDirection.Horizontal
+    list.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    list.Padding = UDim.new(0,8)
+    list.Parent = buttonHolder
+
+    local function makeTitleButton(text,color)
+
+        local b = Instance.new("TextButton")
+        b.AutoButtonColor = false
+        b.Size = UDim2.fromOffset(40,32)
+        b.BackgroundColor3 = Color3.fromRGB(28,32,38)
+        b.BorderSizePixel = 0
+        b.Text = text
+        b.TextSize = 18
+        b.Font = Enum.Font.GothamBold
+        b.TextColor3 = color
+
+        Instance.new("UICorner",b).CornerRadius = UDim.new(0,8)
+
+        local s = Instance.new("UIStroke")
+        s.Transparency = .8
+        s.Color = color
+        s.Parent = b
+
+        b.MouseEnter:Connect(function()
+            b.BackgroundColor3 = Color3.fromRGB(38,44,52)
+        end)
+
+        b.MouseLeave:Connect(function()
+            b.BackgroundColor3 = Color3.fromRGB(28,32,38)
+        end)
+
+        b.Parent = buttonHolder
+
+        return b
+
+    end
+
+    local minimize = makeTitleButton("━",Color3.fromRGB(170,255,145))
+    local close = makeTitleButton("✕",Color3.fromRGB(255,110,110))
+
+    ----------------------------------------------------
+    -- Content
+    ----------------------------------------------------
+
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.BackgroundTransparency = 1
+    content.Position = UDim2.fromOffset(16,64)
+    content.Size = UDim2.new(1,-32,1,-80)
+    content.Parent = root
+
+    local horizontal = Instance.new("UIListLayout")
+    horizontal.FillDirection = Enum.FillDirection.Horizontal
+    horizontal.Padding = UDim.new(0,16)
+    horizontal.Parent = content
+
+    ----------------------------------------------------
+    -- Left
+    ----------------------------------------------------
+
+    local left = Instance.new("Frame")
+    left.Name = "LeftColumn"
+    left.Size = UDim2.new(.58,0,1,0)
+    left.BackgroundTransparency = 1
+    left.Parent = content
+
+    local leftPadding = Instance.new("UIPadding")
+    leftPadding.PaddingTop = UDim.new(0,2)
+    leftPadding.PaddingLeft = UDim.new(0,2)
+    leftPadding.PaddingRight = UDim.new(0,2)
+    leftPadding.PaddingBottom = UDim.new(0,2)
+    leftPadding.Parent = left
+
+    local leftLayout = Instance.new("UIListLayout")
+    leftLayout.Padding = UDim.new(0,12)
+    leftLayout.Parent = left
+
+    ----------------------------------------------------
+    -- Right
+    ----------------------------------------------------
+
+    local right = Instance.new("Frame")
+    right.Name = "RightColumn"
+    right.Size = UDim2.new(.42,-16,1,0)
+    right.BackgroundTransparency = 1
+    right.Parent = content
+
+    local rightPadding = Instance.new("UIPadding")
+    rightPadding.PaddingTop = UDim.new(0,2)
+    rightPadding.PaddingLeft = UDim.new(0,2)
+    rightPadding.PaddingRight = UDim.new(0,2)
+    rightPadding.PaddingBottom = UDim.new(0,2)
+    rightPadding.Parent = right
+
+    local rightLayout = Instance.new("UIListLayout")
+    rightLayout.Padding = UDim.new(0,12)
+    rightLayout.Parent = right
+
+    ----------------------------------------------------
+    -- Store
+    ----------------------------------------------------
+
+    ui.root = root
+    ui.screenGui = gui
+
+    ui.titleBar = titleBar
+
+    ui.leftColumn = left
+    ui.rightColumn = right
+
+    ui.minimizeButton = minimize
+    ui.closeButton = close
+
+    return gui
 end
 
-local function createTextLabel(parent, name, text, size, color, alignment)
+local function createStatusRow(parent, title)
+
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1,0,0,22)
+	row.Parent = parent
+
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Horizontal
+	list.VerticalAlignment = Enum.VerticalAlignment.Center
+	list.Parent = row
+
 	local label = Instance.new("TextLabel")
-	label.Name = name
 	label.BackgroundTransparency = 1
-	label.Size = size
-	label.Font = Enum.Font.Roboto
+	label.Size = UDim2.new(.38,0,1,0)
+	label.Font = Enum.Font.GothamMedium
+	label.Text = title
+	label.TextSize = 13
+	label.TextColor3 = Color3.fromRGB(150,150,150)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local value = Instance.new("TextLabel")
+	value.BackgroundTransparency = 1
+	value.Size = UDim2.new(.62,0,1,0)
+	value.Font = Enum.Font.Gotham
+	value.Text = "—"
+	value.TextSize = 13
+	value.TextColor3 = Color3.fromRGB(230,230,230)
+	value.TextXAlignment = Enum.TextXAlignment.Left
+	value.Parent = row
+
+	return value
+end
+
+local function createSectionLabel(parent, text)
+
+	local label = Instance.new("TextLabel")
+
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1,0,0,18)
+	label.Font = Enum.Font.GothamMedium
 	label.Text = text
-	label.TextColor3 = color or Color3.fromRGB(220, 220, 220)
-	label.TextSize = 14
-	label.TextXAlignment = alignment or Enum.TextXAlignment.Left
-	label.TextYAlignment = Enum.TextYAlignment.Center
+	label.TextSize = 13
+	label.TextColor3 = Color3.fromRGB(170,255,145)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+
 	label.Parent = parent
+
 	return label
 end
 
-local function createButton(parent, name, text)
-	local button = Instance.new("TextButton")
-	button.Name = name
-	button.AutoButtonColor = false
-	button.BackgroundColor3 = Color3.fromRGB(25, 28, 32)
-	button.BorderSizePixel = 0
-	button.Font = Enum.Font.RobotoBold
-	button.Text = text
-	button.TextColor3 = Color3.fromRGB(178, 255, 137)
-	button.TextSize = 14
-	button.Size = UDim2.new(1, 0, 0, 32)
-	button.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 0.14)
-	corner.Parent = button
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(58, 255, 102)
-	stroke.Transparency = 0.8
-	stroke.Parent = button
-	return button
-end
+local function createInput(parent, name, placeholder, defaultText)
 
-local function createInputLabel(parent, name, placeholder)
+	local container = Instance.new("Frame")
+	container.Name = name .. "Container"
+	container.Size = UDim2.new(1, 0, 0, 42)
+	container.BackgroundColor3 = Color3.fromRGB(18, 21, 27)
+	container.BorderSizePixel = 0
+	container.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = container
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(70, 255, 150)
+	stroke.Transparency = 0.88
+	stroke.Parent = container
+
 	local box = Instance.new("TextBox")
 	box.Name = name
-	box.BackgroundColor3 = Color3.fromRGB(18, 20, 24)
-	box.BorderSizePixel = 0
+	box.BackgroundTransparency = 1
 	box.ClearTextOnFocus = false
-	box.Font = Enum.Font.RobotoMono
-	box.PlaceholderText = placeholder or ""
-	box.Text = ""
-	box.TextColor3 = Color3.fromRGB(232, 232, 232)
+	box.Position = UDim2.new(0, 12, 0, 0)
+	box.Size = UDim2.new(1, -24, 1, 0)
+
+	box.Font = Enum.Font.Gotham
 	box.TextSize = 14
+
+	box.Text = defaultText or ""
+	box.PlaceholderText = placeholder or ""
+
+	box.TextColor3 = Color3.fromRGB(235,235,235)
+	box.PlaceholderColor3 = Color3.fromRGB(120,125,132)
+
 	box.TextXAlignment = Enum.TextXAlignment.Left
-	box.Size = UDim2.new(1, 0, 0, 32)
-	box.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 0.14)
-	corner.Parent = box
+	box.TextYAlignment = Enum.TextYAlignment.Center
+
+	box.Parent = container
+
+	box.Focused:Connect(function()
+		stroke.Transparency = 0
+		stroke.Thickness = 1.5
+	end)
+
+	box.FocusLost:Connect(function()
+		stroke.Transparency = .88
+		stroke.Thickness = 1
+	end)
+
 	return box
 end
 
-local function createSlider(parent)
-	local sliderFrame =
-		createRoundedFrame(parent, "RadiusSlider", Color3.fromRGB(20, 22, 28), Color3.fromRGB(60, 255, 130), 1)
-	sliderFrame.Size = UDim2.new(1, 0, 0, 32)
+local function createButton(parent, name, text, accentColor)
 
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.BackgroundColor3 = Color3.fromRGB(58, 255, 102)
-	fill.Size = UDim2.new(0.3, 0, 1, 0)
-	fill.Parent = sliderFrame
+	accentColor = accentColor or Color3.fromRGB(70, 255, 150)
+
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = UDim2.new(1, 0, 0, 40)
+	button.AutoButtonColor = false
+	button.BackgroundColor3 = Color3.fromRGB(28, 32, 39)
+	button.BorderSizePixel = 0
+
+	button.Font = Enum.Font.GothamBold
+	button.Text = text
+	button.TextSize = 14
+	button.TextColor3 = Color3.fromRGB(235,235,235)
+
+	button.Parent = parent
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 0.14)
-	corner.Parent = fill
+	corner.CornerRadius = UDim.new(0,8)
+	corner.Parent = button
 
-	local hitArea = Instance.new("TextButton")
-	hitArea.Name = "HitArea"
-	hitArea.BackgroundTransparency = 1
-	hitArea.Size = UDim2.new(1, 1, 1, 0)
-	hitArea.AutoButtonColor = false
-	hitArea.Text = ""
-	hitArea.Parent = sliderFrame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = accentColor
+	stroke.Transparency = .82
+	stroke.Parent = button
 
-	return sliderFrame, fill, hitArea
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new{
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(34,39,46)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(24,27,33))
+	}
+	gradient.Rotation = 90
+	gradient.Parent = button
+
+	-----------------------------------
+	-- Hover
+	-----------------------------------
+
+	button.MouseEnter:Connect(function()
+
+		button.BackgroundColor3 = Color3.fromRGB(40,45,54)
+
+		stroke.Transparency = .15
+		stroke.Thickness = 1.5
+
+	end)
+
+	button.MouseLeave:Connect(function()
+
+		button.BackgroundColor3 = Color3.fromRGB(28,32,39)
+
+		stroke.Transparency = .82
+		stroke.Thickness = 1
+
+	end)
+
+	-----------------------------------
+	-- Press
+	-----------------------------------
+
+	button.MouseButton1Down:Connect(function()
+
+		button.Size = button.Size - UDim2.fromOffset(0,2)
+
+	end)
+
+	button.MouseButton1Up:Connect(function()
+
+		button.Size = UDim2.new(1,0,0,40)
+
+	end)
+
+	return button
 end
 
-local function createInterface()
-	local existingGui = playerGui:FindFirstChild("AutoSprinklerPanel")
-	if existingGui then
-		existingGui:Destroy()
-	end
+local function createPrimaryButton(parent)
 
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "AutoSprinklerPanel"
-	screenGui.ResetOnSpawn = false
-	screenGui.DisplayOrder = 100
-	screenGui.Parent = playerGui
-
-	local root = createRoundedFrame(screenGui, "RootFrame", Color3.fromRGB(12, 14, 18), Color3.fromRGB(20, 20, 24), 0)
-	root.AnchorPoint = Vector2.new(0.5, 0)
-	root.Position = UDim2.new(0.5, 0, 0.06, 0)
-	root.Size = UDim2.new(0, 720, 0, 360)
-	root.BackgroundTransparency = 0
-	root.BorderSizePixel = 1
-	root.BorderColor3 = Color3.fromRGB(58, 255, 102)
-
-	local bg = Instance.new("UIGradient")
-	bg.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 16, 20)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(22, 24, 28)),
-	})
-	bg.Rotation = 90
-	bg.Parent = root
-
-	local titleBar = createRoundedFrame(root, "TitleBar", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
-	titleBar.Size = UDim2.new(1, 0, 0, 48)
-	titleBar.Position = UDim2.new(0, 0, 0, 0)
-	titleBar.BorderSizePixel = 0
-
-	local titleLabel = createTextLabel(
-		titleBar,
-		"TitleLabel",
-		"AUTO SPRINKLER CONTROL",
-		UDim2.new(0.7, -16, 1, 0),
-		Color3.fromRGB(186, 255, 151),
-		Enum.TextXAlignment.Left
+	local b = createButton(
+		parent,
+		"StartButton",
+		"START",
+		Color3.fromRGB(60,255,120)
 	)
-	titleLabel.Position = UDim2.new(0, 16, 0, 0)
-	titleLabel.TextSize = 16
-	titleLabel.Font = Enum.Font.GothamSemibold
 
-	local minimizeButton = Instance.new("TextButton")
-	minimizeButton.Name = "MinimizeButton"
-	minimizeButton.Size = UDim2.new(0, 32, 0, 32)
-	minimizeButton.Position = UDim2.new(0.78, 0, 0.08, 0)
-	minimizeButton.Text = "━"
-	minimizeButton.Font = Enum.Font.GothamSemibold
-	minimizeButton.TextSize = 18
-	minimizeButton.TextColor3 = Color3.fromRGB(178, 255, 137)
-	minimizeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
-	minimizeButton.BorderSizePixel = 0
-	minimizeButton.Parent = titleBar
-	local minCorner = Instance.new("UICorner")
-	minCorner.CornerRadius = UDim.new(0, 0.18)
-	minCorner.Parent = minimizeButton
+	b.TextColor3 = Color3.new(1,1,1)
 
-	local closeButton = Instance.new("TextButton")
-	closeButton.Name = "CloseButton"
-	closeButton.Size = UDim2.new(0, 32, 0, 32)
-	closeButton.Position = UDim2.new(0.88, 0, 0.08, 0)
-	closeButton.Text = "✕"
-	closeButton.Font = Enum.Font.GothamSemibold
-	closeButton.TextSize = 18
-	closeButton.TextColor3 = Color3.fromRGB(255, 100, 100)
-	closeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
-	closeButton.BorderSizePixel = 0
-	closeButton.Parent = titleBar
-	local closeCorner = Instance.new("UICorner")
-	closeCorner.CornerRadius = UDim.new(0, 0.18)
-	closeCorner.Parent = closeButton
+	return b
+end
 
-	local bodyFrame = Instance.new("Frame")
-	bodyFrame.Name = "BodyFrame"
-	bodyFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-	bodyFrame.BackgroundTransparency = 0.05
-	bodyFrame.Position = UDim2.new(0, 0, 0, 48)
-	bodyFrame.Size = UDim2.new(1, 0, 1, -48)
-	bodyFrame.Parent = root
+local function createDangerButton(parent)
 
-	ui.root = root
-	ui.bodyFrame = bodyFrame
-	ui.minimized = false
-	ui.minimizeButton = minimizeButton
-	ui.closeButton = closeButton
-
-	local leftPanel =
-		createRoundedFrame(bodyFrame, "LeftPanel", Color3.fromRGB(15, 18, 24), Color3.fromRGB(60, 255, 150), 1)
-	leftPanel.Size = UDim2.new(0.58, 0, 1, 0)
-	leftPanel.Position = UDim2.new(0, 0, 0, 0)
-	leftPanel.BackgroundTransparency = 0.05
-	leftPanel.Parent = bodyFrame
-
-	local rightPanel =
-		createRoundedFrame(bodyFrame, "RightPanel", Color3.fromRGB(15, 18, 24), Color3.fromRGB(60, 255, 150), 1)
-	rightPanel.Size = UDim2.new(0.42, -12, 1, 0)
-	rightPanel.Position = UDim2.new(0.58, 12, 0, 0)
-	rightPanel.BackgroundTransparency = 0.05
-	rightPanel.Parent = bodyFrame
-
-	local leftLayout = Instance.new("UIListLayout")
-	leftLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	leftLayout.Padding = UDim.new(0, 12)
-	leftLayout.Parent = leftPanel
-
-	local rightLayout = Instance.new("UIListLayout")
-	rightLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	rightLayout.Padding = UDim.new(0, 12)
-	rightLayout.Parent = rightPanel
-
-	local leftHeader = createTextLabel(
-		leftPanel,
-		"LeftHeader",
-		"Controls",
-		UDim2.new(1, -24, 0, 28),
-		Color3.fromRGB(186, 255, 151),
-		Enum.TextXAlignment.Left
+	local b = createButton(
+		parent,
+		"StopButton",
+		"STOP",
+		Color3.fromRGB(255,90,90)
 	)
-	leftHeader.Position = UDim2.new(0, 12, 0, 12)
-	leftHeader.TextSize = 16
 
-	local rightHeader = createTextLabel(
-		rightPanel,
-		"RightHeader",
-		"Status",
-		UDim2.new(1, -24, 0, 28),
-		Color3.fromRGB(186, 255, 151),
-		Enum.TextXAlignment.Left
-	)
-	rightHeader.Position = UDim2.new(0, 12, 0, 12)
-	rightHeader.TextSize = 16
-
-	local function section(parent, title, height)
-		local container = Instance.new("Frame")
-		container.Name = title:gsub("%s+", "")
-		container.BackgroundTransparency = 1
-		container.Size = UDim2.new(1, -24, 0, height)
-		container.Parent = parent
-
-		local label = createTextLabel(
-			container,
-			title .. "Label",
-			title,
-			UDim2.new(1, 0, 0, 18),
-			Color3.fromRGB(178, 255, 137),
-			Enum.TextXAlignment.Left
-		)
-		label.Position = UDim2.new(0, 0, 0, 0)
-		label.TextSize = 13
-
-		return container
-	end
-
-	local targetSection = section(leftPanel, "Target Player", 92)
-	ui.playerInput = createInputLabel(targetSection, "PlayerInput", "Enter username or user ID")
-	ui.playerInput.Position = UDim2.new(0, 0, 0, 36)
-
-	local selectionSection = section(leftPanel, "Sprinkler Selection", 152)
-	local buttonGrid = Instance.new("Frame")
-	buttonGrid.Name = "ButtonGrid"
-	buttonGrid.BackgroundTransparency = 1
-	buttonGrid.Size = UDim2.new(1, 0, 0, 88)
-	buttonGrid.Position = UDim2.new(0, 0, 0, 32)
-	buttonGrid.Parent = selectionSection
-
-	local gridLayout = Instance.new("UIGridLayout")
-	gridLayout.CellSize = UDim2.new(0.48, 0, 0, 36)
-	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
-	gridLayout.FillDirection = Enum.FillDirection.Horizontal
-	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-	gridLayout.VerticalAlignment = Enum.VerticalAlignment.Top
-	gridLayout.Parent = buttonGrid
-
-	ui.typeButtons = {}
-	for key in pairs(SPRINKLER_TYPES) do
-		local btn = createButton(buttonGrid, key .. "Button", key)
-		btn.TextSize = 13
-		btn.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
-		ui.typeButtons[key] = btn
-	end
-
-	local modeContainer = Instance.new("Frame")
-	modeContainer.Name = "ModeContainer"
-	modeContainer.BackgroundTransparency = 1
-	modeContainer.Size = UDim2.new(1, 0, 0, 36)
-	modeContainer.Position = UDim2.new(0, 0, 0, 124)
-	modeContainer.Parent = selectionSection
-
-	local modeLabel = createTextLabel(
-		modeContainer,
-		"ModeLabel",
-		"Mode",
-		UDim2.new(0.18, 0, 1, 0),
-		Color3.fromRGB(178, 255, 137),
-		Enum.TextXAlignment.Left
-	)
-	modeLabel.Position = UDim2.new(0, 0, 0, 0)
-	modeLabel.TextSize = 13
-
-	ui.modeSingle = createButton(modeContainer, "SingleMode", "Single")
-	ui.modeSingle.Size = UDim2.new(0.38, -6, 1, 0)
-	ui.modeSingle.Position = UDim2.new(0.22, 0, 0, 0)
-	ui.modeSingle.TextSize = 12
-
-	ui.modeSequence = createButton(modeContainer, "SequenceMode", "Sequence")
-	ui.modeSequence.Size = UDim2.new(0.38, -6, 1, 0)
-	ui.modeSequence.Position = UDim2.new(0.58, 0, 0, 0)
-	ui.modeSequence.TextSize = 12
-
-	local layoutSection = section(leftPanel, "Placement Settings", 166)
-
-	local radiusLabel = createTextLabel(
-		layoutSection,
-		"RadiusLabel",
-		"Radius: 3 studs",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(220, 220, 220),
-		Enum.TextXAlignment.Left
-	)
-	radiusLabel.Position = UDim2.new(0, 0, 0, 30)
-
-	ui.radiusSlider, ui.radiusFill, ui.radiusHit = createSlider(layoutSection)
-	ui.radiusSlider.Position = UDim2.new(0, 0, 0, 56)
-
-	local delayLabel = createTextLabel(
-		layoutSection,
-		"DelayLabel",
-		"Delay: 1.0 sec",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(220, 220, 220),
-		Enum.TextXAlignment.Left
-	)
-	delayLabel.Position = UDim2.new(0, 0, 0, 98)
-
-	ui.delayInput = createInputLabel(layoutSection, "DelayInput", "Enter delay in seconds")
-	ui.delayInput.Position = UDim2.new(0, 0, 0, 120)
-	ui.delayInput.Text = tostring(DEFAULT_DELAY)
-
-	local statusContainer =
-		createRoundedFrame(rightPanel, "StatusContainer", Color3.fromRGB(18, 20, 24), Color3.fromRGB(60, 255, 144), 1)
-	statusContainer.Size = UDim2.new(1, -24, 0.48, 0)
-	statusContainer.Position = UDim2.new(0, 12, 0, 48)
-	statusContainer.Parent = rightPanel
-
-	local statusTitle = createTextLabel(
-		statusContainer,
-		"StatusTitle",
-		"Garden Status",
-		UDim2.new(1, 0, 0, 20),
-		Color3.fromRGB(178, 255, 137),
-		Enum.TextXAlignment.Left
-	)
-	statusTitle.Position = UDim2.new(0, 0, 0, 8)
-	statusTitle.TextSize = 14
-
-	ui.statusDetected = createTextLabel(
-		statusContainer,
-		"DetectedPlayer",
-		"Detected: —",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(200, 200, 200),
-		Enum.TextXAlignment.Left
-	)
-	ui.statusDetected.Position = UDim2.new(0, 0, 0, 36)
-
-	ui.statusOwner = createTextLabel(
-		statusContainer,
-		"OwnerId",
-		"OwnerUserId: —",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(200, 200, 200),
-		Enum.TextXAlignment.Left
-	)
-	ui.statusOwner.Position = UDim2.new(0, 0, 0, 58)
-
-	ui.statusPlot = createTextLabel(
-		statusContainer,
-		"PlotName",
-		"Plot Name: —",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(200, 200, 200),
-		Enum.TextXAlignment.Left
-	)
-	ui.statusPlot.Position = UDim2.new(0, 0, 0, 80)
-
-	ui.statusPlants = createTextLabel(
-		statusContainer,
-		"PlantCount",
-		"Plant Count: —",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(200, 200, 200),
-		Enum.TextXAlignment.Left
-	)
-	ui.statusPlants.Position = UDim2.new(0, 0, 0, 102)
-
-	ui.statusAction = createTextLabel(
-		statusContainer,
-		"CurrentAction",
-		"Action: Idle",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(178, 255, 137),
-		Enum.TextXAlignment.Left
-	)
-	ui.statusAction.Position = UDim2.new(0, 0, 0, 124)
-
-	local actionSection =
-		createRoundedFrame(leftPanel, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
-	actionSection.Size = UDim2.new(1, -24, 0, 116)
-	actionSection.Parent = leftPanel
-
-	local actionTitle = createTextLabel(
-		actionSection,
-		"ActionTitle",
-		"Actions",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(178, 255, 137),
-		Enum.TextXAlignment.Left
-	)
-	actionTitle.Position = UDim2.new(0, 0, 0, 8)
-	actionTitle.TextSize = 14
-
-	local actionGrid = Instance.new("UIGridLayout")
-	actionGrid.CellSize = UDim2.new(0.31, 0, 0, 42)
-	actionGrid.CellPadding = UDim2.new(0, 12, 0, 12)
-	actionGrid.FillDirection = Enum.FillDirection.Horizontal
-	actionGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	actionGrid.VerticalAlignment = Enum.VerticalAlignment.Top
-	actionGrid.Parent = actionSection
-
-	ui.startButton = createButton(actionSection, "StartButton", "START")
-	ui.startButton.Size = UDim2.new(0.31, 0, 0, 42)
-	ui.startButton.TextSize = 14
-
-	ui.stopButton = createButton(actionSection, "StopButton", "STOP")
-	ui.stopButton.Size = UDim2.new(0.31, 0, 0, 42)
-	ui.stopButton.TextSize = 14
-
-	ui.superButton = createButton(actionSection, "SuperButton", "SUPER WATER")
-	ui.superButton.Size = UDim2.new(0.31, 0, 0, 42)
-	ui.superButton.TextSize = 12
-
-	local logContainer =
-		createRoundedFrame(rightPanel, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
-	logContainer.Size = UDim2.new(1, -24, 0.5, -12)
-	logContainer.Position = UDim2.new(0, 12, 0.52, 0)
-	logContainer.Parent = rightPanel
-
-	local logTitle = createTextLabel(
-		logContainer,
-		"LogTitle",
-		"Live Status Log",
-		UDim2.new(1, 0, 0, 18),
-		Color3.fromRGB(178, 255, 137),
-		Enum.TextXAlignment.Left
-	)
-	logTitle.Position = UDim2.new(0, 0, 0, 8)
-	logTitle.TextSize = 13
-
-	local logBox = Instance.new("ScrollingFrame")
-	logBox.Name = "LogBox"
-	logBox.BackgroundTransparency = 1
-	logBox.BorderSizePixel = 0
-	logBox.Position = UDim2.new(0, 0, 0, 32)
-	logBox.Size = UDim2.new(1, 0, 1, -32)
-	logBox.ScrollBarImageColor3 = Color3.fromRGB(110, 255, 142)
-	logBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	logBox.CanvasSize = UDim2.new(0, 0, 0, 0)
-	logBox.Parent = logContainer
-
-	local logLayout = Instance.new("UIListLayout")
-	logLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	logLayout.Padding = UDim.new(0, 4)
-	logLayout.Parent = logBox
-
-	ui.logBox = logBox
-	ui.logLayout = logLayout
-	ui.radiusLabel = radiusLabel
-	ui.delayLabel = delayLabel
-
-	return screenGui
+	return b
 end
 
 local function clamp(value, minValue, maxValue)
 	return math.clamp(value, minValue, maxValue)
+end
+
+local function createSpecialButton(parent)
+
+	local b = createButton(
+		parent,
+		"SuperWaterButton",
+		"SUPER WATER",
+		Color3.fromRGB(90,170,255)
+	)
+
+	return b
+end
+
+local function createSlider(parent, title, minValue, maxValue, defaultValue)
+
+	local container = Instance.new("Frame")
+	container.Name = title:gsub("%s+", "") .. "Slider"
+	container.Size = UDim2.new(1,0,0,70)
+	container.BackgroundTransparency = 1
+	container.Parent = parent
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0,8)
+	layout.Parent = container
+
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1,0,0,18)
+	label.Font = Enum.Font.GothamMedium
+	label.Text = string.format("%s: %.1f", title, defaultValue)
+	label.TextSize = 13
+	label.TextColor3 = Color3.fromRGB(225,225,225)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = container
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1,0,0,8)
+	track.BackgroundColor3 = Color3.fromRGB(35,40,48)
+	track.BorderSizePixel = 0
+	track.Parent = container
+
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1,0)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(
+		(defaultValue - minValue) / (maxValue - minValue),
+		1
+	)
+	fill.BackgroundColor3 = Color3.fromRGB(70,255,150)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(16,16)
+	knob.AnchorPoint = Vector2.new(.5,.5)
+	knob.Position = UDim2.new(fill.Size.X.Scale,0,.5,0)
+	knob.BackgroundColor3 = Color3.fromRGB(245,245,245)
+	knob.BorderSizePixel = 0
+	knob.Parent = track
+
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1,0)
+
+	local hitbox = Instance.new("TextButton")
+	hitbox.BackgroundTransparency = 1
+	hitbox.Size = UDim2.new(1,0,1,10)
+	hitbox.Position = UDim2.new(0,0,0,-5)
+	hitbox.Text = ""
+	hitbox.Parent = track
+
+	return {
+		container = container,
+		label = label,
+		track = track,
+		fill = fill,
+		knob = knob,
+		hitbox = hitbox,
+		min = minValue,
+		max = maxValue,
+		value = defaultValue
+	}
+end
+
+local function createCard(parent, title, height)
+	local card = Instance.new("Frame")
+	card.Name = title:gsub("%s+", "") .. "Card"
+	card.Size = UDim2.new(1, 0, 0, height)
+	card.BackgroundColor3 = Color3.fromRGB(20, 23, 29)
+	card.BorderSizePixel = 0
+	card.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = card
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(65, 255, 145)
+	stroke.Transparency = 0.82
+	stroke.Parent = card
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 12)
+	padding.PaddingBottom = UDim.new(0, 12)
+	padding.PaddingLeft = UDim.new(0, 12)
+	padding.PaddingRight = UDim.new(0, 12)
+	padding.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = card
+
+	local header = Instance.new("TextLabel")
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, 0, 0, 22)
+	header.Font = Enum.Font.GothamBold
+	header.Text = title
+	header.TextSize = 15
+	header.TextColor3 = Color3.fromRGB(175, 255, 145)
+	header.TextXAlignment = Enum.TextXAlignment.Left
+	header.Parent = card
+
+	return card
+end
+
+local function createPlayerCard()
+
+	local card = createCard(ui.leftColumn, "Target Player", 95)
+
+	createSectionLabel(card, "Username / User ID")
+
+	ui.playerInput = createInput(
+		card,
+		"PlayerInput",
+		"Enter username or user ID"
+	)
+
+	return card
+end
+
+local function createSprinklerCard()
+
+	local card = createCard(ui.leftColumn, "Sprinkler Selection", 165)
+
+	local grid = Instance.new("Frame")
+	grid.BackgroundTransparency = 1
+	grid.Size = UDim2.new(1,0,0,90)
+	grid.Parent = card
+
+	local layout = Instance.new("UIGridLayout")
+	layout.CellSize = UDim2.new(.48,0,0,38)
+	layout.CellPadding = UDim2.new(0,8,0,8)
+	layout.Parent = grid
+
+	ui.typeButtons = {}
+
+	for _,name in ipairs({
+		"Common",
+		"Uncommon",
+		"Rare",
+		"Legendary"
+	}) do
+
+		ui.typeButtons[name] =
+			createSmallButton(grid,name,name)
+
+	end
+
+	local modeFrame = Instance.new("Frame")
+	modeFrame.BackgroundTransparency = 1
+	modeFrame.Size = UDim2.new(1,0,0,40)
+	modeFrame.Parent = card
+
+	local modeLayout = Instance.new("UIListLayout")
+	modeLayout.FillDirection = Enum.FillDirection.Horizontal
+	modeLayout.Padding = UDim.new(0,8)
+	modeLayout.Parent = modeFrame
+
+	ui.modeSingle =
+		createSmallButton(modeFrame,"Single","Single")
+
+	ui.modeSequence =
+		createSmallButton(modeFrame,"Sequence","Sequence")
+end
+
+local function createPlacementCard()
+
+	local card = createCard(ui.leftColumn,"Placement Settings",165)
+
+	ui.radiusSlider = createSlider(
+		card,
+		"Radius",
+		MIN_RADIUS,
+		MAX_RADIUS,
+		DEFAULT_RADIUS
+	)
+
+	ui.delayInput = createInput(
+		card,
+		"DelayInput",
+		"Delay (seconds)",
+		tostring(DEFAULT_DELAY),
+		true
+	)
+
+	return card
+end
+
+local function createActionCard()
+
+	local card = createCard(ui.leftColumn,"Actions",95)
+
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1,0,0,42)
+	row.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0,10)
+	layout.Parent = row
+
+	ui.startButton = createPrimaryButton(row)
+	ui.startButton.Size = UDim2.new(.33,-6,1,0)
+
+	ui.stopButton = createDangerButton(row)
+	ui.stopButton.Size = UDim2.new(.33,-6,1,0)
+
+	ui.superButton = createSpecialButton(row)
+	ui.superButton.Size = UDim2.new(.34,-6,1,0)
+end
+
+local function createStatusCard()
+
+	local card = createCard(ui.rightColumn, "Garden Status", 170)
+
+	ui.statusDetected = createStatusRow(card, "Player")
+	ui.statusOwner = createStatusRow(card, "Owner ID")
+	ui.statusPlot = createStatusRow(card, "Plot")
+	ui.statusPlants = createStatusRow(card, "Plants")
+	ui.statusAction = createStatusRow(card, "Status")
+
+	ui.statusDetected.Text = "—"
+	ui.statusOwner.Text = "—"
+	ui.statusPlot.Text = "—"
+	ui.statusPlants.Text = "—"
+	ui.statusAction.Text = "Idle"
+
+	return card
+
+end
+
+local function createLogCard()
+
+	local card = createCard(ui.rightColumn, "Activity Log", 330)
+
+	local log = Instance.new("ScrollingFrame")
+	log.Name = "LogBox"
+	log.Size = UDim2.new(1,0,1,-30)
+	log.BackgroundTransparency = 1
+	log.BorderSizePixel = 0
+	log.ScrollBarThickness = 5
+	log.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	log.CanvasSize = UDim2.new()
+	log.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0,6)
+	layout.Parent = log
+
+	ui.logBox = log
+	ui.logLayout = layout
+
+	return card
+
+end
+
+local function addLog(text, color)
+
+	color = color or Color3.fromRGB(225,225,225)
+
+	local label = Instance.new("TextLabel")
+
+	label.BackgroundColor3 = Color3.fromRGB(24,28,34)
+	label.BorderSizePixel = 0
+	label.Size = UDim2.new(1,-4,0,26)
+
+	label.Font = Enum.Font.Gotham
+	label.TextSize = 13
+	label.TextColor3 = color
+
+	label.TextXAlignment = Enum.TextXAlignment.Left
+
+	label.Text = "  "..os.date("%H:%M:%S").."   "..text
+
+	label.Parent = ui.logBox
+
+	Instance.new("UICorner",label).CornerRadius = UDim.new(0,6)
+
+	task.defer(function()
+
+		ui.logBox.CanvasPosition =
+			Vector2.new(
+				0,
+				ui.logLayout.AbsoluteContentSize.Y
+			)
+
+	end)
+
+end
+
+local function createInterface()
+
+	createWindow()
+
+	createPlayerCard()
+
+	createSprinklerCard()
+
+	createPlacementCard()
+
+	createActionCard()
+
+	createStatusCard()
+
+	createLogCard()
+
+end
+
+local function initializeUI()
+
+	createInterface()
+
+	ui.selectedType = "Common"
+	ui.mode = "Sequence"
+
+	refreshSelectionButtons()
+
+	--------------------------------------------------
+	-- Sprinkler Buttons
+	--------------------------------------------------
+
+	for typeName,button in pairs(ui.typeButtons) do
+
+		button.MouseButton1Click:Connect(function()
+
+			ui.selectedType = typeName
+
+			setMode("Single")
+
+			refreshSelectionButtons()
+
+		end)
+
+	end
+
+	--------------------------------------------------
+	-- Mode
+	--------------------------------------------------
+
+	ui.modeSingle.MouseButton1Click:Connect(function()
+
+		setMode("Single")
+
+	end)
+
+	ui.modeSequence.MouseButton1Click:Connect(function()
+
+		setMode("Sequence")
+
+	end)
+
+	--------------------------------------------------
+	-- Actions
+	--------------------------------------------------
+
+	ui.startButton.MouseButton1Click:Connect(startPressed)
+
+	ui.stopButton.MouseButton1Click:Connect(stopPressed)
+
+	ui.superButton.MouseButton1Click:Connect(superWaterPressed)
+
+	--------------------------------------------------
+	-- Delay
+	--------------------------------------------------
+
+	ui.delayInput.FocusLost:Connect(function()
+
+		local value = tonumber(ui.delayInput.Text)
+
+		if not value then
+			value = DEFAULT_DELAY
+		end
+
+		value = clamp(value, MIN_DELAY, MAX_DELAY)
+
+		ui.delayInput.Text = tostring(value)
+
+		updateDelayLabel(value)
+
+	end)
+
+	--------------------------------------------------
+	-- Slider
+	--------------------------------------------------
+
+	local slider = ui.radius
+
+	local dragging = false
+
+	local function update(mouseX)
+
+		local left = slider.track.AbsolutePosition.X
+
+		local width = slider.track.AbsoluteSize.X
+
+		local alpha = math.clamp(
+			(mouseX-left)/width,
+			0,
+			1
+		)
+
+		local value =
+			slider.min +
+			(alpha*(slider.max-slider.min))
+
+		value = math.floor(value*10+.5)/10
+
+		slider.value = value
+
+		slider.fill.Size = UDim2.fromScale(alpha,1)
+
+		slider.knob.Position = UDim2.new(alpha,0,.5,0)
+
+		slider.label.Text =
+			string.format("Radius: %.1f",value)
+
+		updateSliderFill(value)
+
+	end
+
+	slider.hitbox.InputBegan:Connect(function(input)
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+			dragging = true
+
+			update(input.Position.X)
+
+		end
+
+	end)
+
+	slider.hitbox.InputChanged:Connect(function(input)
+
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+
+			update(input.Position.X)
+
+		end
+
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+			dragging = false
+
+		end
+
+	end)
+
+	--------------------------------------------------
+	-- Close
+	--------------------------------------------------
+
+	ui.closeButton.MouseButton1Click:Connect(function()
+
+		ui.screenGui:Destroy()
+
+	end)
+
+	--------------------------------------------------
+	-- Minimize
+	--------------------------------------------------
+
+	local expanded = ui.root.Size
+
+	local minimized = UDim2.fromOffset(
+		expanded.X.Offset,
+		48
+	)
+
+	local minimizedState = false
+
+	ui.minimizeButton.MouseButton1Click:Connect(function()
+
+		minimizedState = not minimizedState
+
+		for _,obj in ipairs(ui.root:GetChildren()) do
+
+			if obj.Name == "Content" then
+
+				obj.Visible = not minimizedState
+
+			end
+
+		end
+
+		ui.root.Size =
+			minimizedState and minimized or expanded
+
+		ui.minimizeButton.Text =
+			minimizedState and "+" or "━"
+
+	end)
+
+	--------------------------------------------------
+	-- Dragging
+	--------------------------------------------------
+
+	local draggingWindow = false
+
+	local dragStart
+
+	local startPos
+
+	ui.titleBar.InputBegan:Connect(function(input)
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+			draggingWindow = true
+
+			dragStart = input.Position
+
+			startPos = ui.root.Position
+
+		end
+
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+
+		if not draggingWindow then
+			return
+		end
+
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+
+		local delta = input.Position-dragStart
+
+		ui.root.Position =
+			UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset+delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset+delta.Y
+			)
+
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+			draggingWindow = false
+
+		end
+
+	end)
+
+	addLog("UI Loaded.", Color3.fromRGB(80,255,120))
+
 end
 
 local function formatTime(value)
@@ -964,144 +1460,3 @@ local function stopPressed()
 	updateStatusField(ui.statusAction, "Stopping...")
 	logStatus("Stop requested.")
 end
-
-local function initializeUI()
-	createInterface()
-	ui.selectedType = "Common"
-	ui.mode = "Sequence"
-	refreshSelectionButtons()
-	updateSliderFill(DEFAULT_RADIUS)
-	updateDelayLabel(DEFAULT_DELAY)
-
-	for key, btn in pairs(ui.typeButtons) do
-		btn.MouseButton1Click:Connect(function()
-			ui.selectedType = key
-			setMode("Single")
-		end)
-	end
-
-	ui.modeSingle.MouseButton1Click:Connect(function()
-		setMode("Single")
-	end)
-
-	ui.modeSequence.MouseButton1Click:Connect(function()
-		setMode("Sequence")
-	end)
-
-	ui.startButton.MouseButton1Click:Connect(startPressed)
-	ui.stopButton.MouseButton1Click:Connect(stopPressed)
-	ui.superButton.MouseButton1Click:Connect(superWaterPressed)
-
-	local titleBar = ui.root and ui.root:FindFirstChild("TitleBar")
-	local draggingWindow = false
-	local dragStart
-	local frameStart
-
-	local function onDragStart(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			draggingWindow = true
-			dragStart = input.Position
-			frameStart = ui.root.Position
-		end
-	end
-
-	local function onDragMove(input)
-		if not draggingWindow then
-			return
-		end
-		local delta = input.Position - dragStart
-		ui.root.Position = UDim2.new(
-			math.clamp(
-				frameStart.X.Scale + delta.X / workspace.CurrentCamera.ViewportSize.X,
-				0,
-				1 - ui.root.Size.X.Scale
-			),
-			frameStart.X.Offset + delta.X,
-			math.clamp(
-				frameStart.Y.Scale + delta.Y / workspace.CurrentCamera.ViewportSize.Y,
-				0,
-				1 - ui.root.Size.Y.Scale
-			),
-			frameStart.Y.Offset + delta.Y
-		)
-	end
-
-	local function onDragEnd(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			draggingWindow = false
-		end
-	end
-
-	if titleBar then
-		titleBar.InputBegan:Connect(onDragStart)
-		titleBar.InputChanged:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseMovement then
-				onDragMove(input)
-			end
-		end)
-		UserInputService.InputEnded:Connect(onDragEnd)
-	end
-
-	if ui.minimizeButton then
-		ui.minimizeButton.MouseButton1Click:Connect(function()
-			ui.minimized = not ui.minimized
-			ui.bodyFrame.Visible = not ui.minimized
-			if ui.minimized then
-				ui.minimizeButton.Text = "+"
-				ui.root.Size = UDim2.new(ui.root.Size.X.Scale, ui.root.Size.X.Offset, 0, 48)
-			else
-				ui.minimizeButton.Text = "━"
-				ui.root.Size = UDim2.new(0, 450, 0, 660)
-			end
-		end)
-	end
-
-	if ui.closeButton then
-		ui.closeButton.MouseButton1Click:Connect(function()
-			ui.root:Destroy()
-		end)
-	end
-
-	local slider = ui.radiusSlider
-	local sliderHit = ui.radiusHit
-	local dragging = false
-	local function updateRadiusFromInput(inputX)
-		local left = slider.AbsolutePosition.X
-		local width = slider.AbsoluteSize.X
-		local ratio = clamp((inputX - left) / width, 0, 1)
-		local value = MIN_RADIUS + ratio * (MAX_RADIUS - MIN_RADIUS)
-		value = math.floor(value * 10 + 0.5) / 10
-		updateSliderFill(value)
-	end
-
-	sliderHit.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			updateRadiusFromInput(input.Position.X)
-		end
-	end)
-
-	sliderHit.InputChanged:Connect(function(input)
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			updateRadiusFromInput(input.Position.X)
-		end
-	end)
-
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = false
-		end
-	end)
-
-	ui.delayInput.FocusLost:Connect(function(enterPressed)
-		local value = tonumber(ui.delayInput.Text)
-		if not value then
-			value = DEFAULT_DELAY
-		end
-		value = clamp(value, MIN_DELAY, MAX_DELAY)
-		ui.delayInput.Text = formatTime(value)
-		updateDelayLabel(value)
-	end)
-end
-
-initializeUI()
