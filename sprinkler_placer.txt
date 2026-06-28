@@ -3,1096 +3,31 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local Networking = require(ReplicatedStorage.SharedModules.Networking)
-
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-local backpack = player:WaitForChild("Backpack")
 
 local SPRINKLER_TYPES = {
-	Common = "Common Sprinkler",
-	Uncommon = "Uncommon Sprinkler",
-	Rare = "Rare Sprinkler",
-	Legendary = "Legendary Sprinkler",
+	"Common Sprinkler",
+	"Uncommon Sprinkler",
+	"Rare Sprinkler",
+	"Legendary Sprinkler",
 }
-
 local WATERING_CAN_NAME = "Super Watering Can"
 local DEFAULT_RADIUS = 3
 local DEFAULT_DELAY = 1
-local MIN_RADIUS = 1
-local MAX_RADIUS = 10
-local MIN_DELAY = 0.2
-local MAX_DELAY = 5
 
 local isRunning = false
-local cancelRequested = false
-local currentTask
 
-local ui = {}
+-- --- CORE LOGIC ---
 
--- Forward declarations: these are referenced inside initializeUI() (defined
--- below) but the actual implementations live further down in the file.
--- Without this, Lua treats the names inside initializeUI as undeclared
--- globals (nil) since the locals don't exist yet at that point in the source.
-local refreshSelectionButtons
-local setMode
-local updateDelayLabel
-local updateSliderFill
-local startPressed
-local stopPressed
-local superWaterPressed
-
-local function createWindow()
-    local existing = playerGui:FindFirstChild("AutoSprinklerPanel")
-    if existing then
-        existing:Destroy()
-    end
-
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "AutoSprinklerPanel"
-    gui.ResetOnSpawn = false
-    gui.DisplayOrder = 100
-    gui.Parent = playerGui
-
-    ----------------------------------------------------
-    -- Root
-    ----------------------------------------------------
-
-    local root = Instance.new("Frame")
-    root.Name = "Root"
-    root.AnchorPoint = Vector2.new(.5, .5)
-    root.Position = UDim2.fromScale(.5,.5)
-    root.Size = UDim2.fromOffset(900,620)
-    root.BackgroundColor3 = Color3.fromRGB(15,17,22)
-    root.BorderSizePixel = 0
-    root.Parent = gui
-
-    Instance.new("UICorner",root).CornerRadius = UDim.new(0,10)
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(55,255,120)
-    stroke.Transparency = .8
-    stroke.Parent = root
-
-    ----------------------------------------------------
-    -- Title Bar
-    ----------------------------------------------------
-
-    local titleBar = Instance.new("Frame")
-    titleBar.Name = "TitleBar"
-    titleBar.Size = UDim2.new(1,0,0,48)
-    titleBar.BackgroundColor3 = Color3.fromRGB(21,24,30)
-    titleBar.BorderSizePixel = 0
-    titleBar.Parent = root
-
-    Instance.new("UICorner",titleBar).CornerRadius = UDim.new(0,10)
-
-    local divider = Instance.new("Frame")
-    divider.Size = UDim2.new(1,0,0,1)
-    divider.Position = UDim2.new(0,0,1,-1)
-    divider.BorderSizePixel = 0
-    divider.BackgroundColor3 = Color3.fromRGB(40,50,60)
-    divider.Parent = titleBar
-
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.Position = UDim2.fromOffset(18,0)
-    title.Size = UDim2.new(1,-140,1,0)
-    title.Font = Enum.Font.GothamBold
-    title.Text = "AUTO SPRINKLER CONTROL"
-    title.TextSize = 18
-    title.TextColor3 = Color3.fromRGB(170,255,145)
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = titleBar
-
-    ----------------------------------------------------
-    -- Buttons
-    ----------------------------------------------------
-
-    local buttonHolder = Instance.new("Frame")
-    buttonHolder.BackgroundTransparency = 1
-    buttonHolder.AnchorPoint = Vector2.new(1,.5)
-    buttonHolder.Position = UDim2.new(1,-14,.5,0)
-    buttonHolder.Size = UDim2.fromOffset(90,32)
-    buttonHolder.Parent = titleBar
-
-    local list = Instance.new("UIListLayout")
-    list.FillDirection = Enum.FillDirection.Horizontal
-    list.HorizontalAlignment = Enum.HorizontalAlignment.Right
-    list.Padding = UDim.new(0,8)
-    list.Parent = buttonHolder
-
-    local function makeTitleButton(text,color)
-
-        local b = Instance.new("TextButton")
-        b.AutoButtonColor = false
-        b.Size = UDim2.fromOffset(40,32)
-        b.BackgroundColor3 = Color3.fromRGB(28,32,38)
-        b.BorderSizePixel = 0
-        b.Text = text
-        b.TextSize = 18
-        b.Font = Enum.Font.GothamBold
-        b.TextColor3 = color
-
-        Instance.new("UICorner",b).CornerRadius = UDim.new(0,8)
-
-        local s = Instance.new("UIStroke")
-        s.Transparency = .8
-        s.Color = color
-        s.Parent = b
-
-        b.MouseEnter:Connect(function()
-            b.BackgroundColor3 = Color3.fromRGB(38,44,52)
-        end)
-
-        b.MouseLeave:Connect(function()
-            b.BackgroundColor3 = Color3.fromRGB(28,32,38)
-        end)
-
-        b.Parent = buttonHolder
-
-        return b
-
-    end
-
-    local minimize = makeTitleButton("━",Color3.fromRGB(170,255,145))
-    local close = makeTitleButton("✕",Color3.fromRGB(255,110,110))
-
-    ----------------------------------------------------
-    -- Content
-    ----------------------------------------------------
-
-    local content = Instance.new("Frame")
-    content.Name = "Content"
-    content.BackgroundTransparency = 1
-    content.Position = UDim2.fromOffset(16,64)
-    content.Size = UDim2.new(1,-32,1,-80)
-    content.Parent = root
-
-    local horizontal = Instance.new("UIListLayout")
-    horizontal.FillDirection = Enum.FillDirection.Horizontal
-    horizontal.Padding = UDim.new(0,16)
-    horizontal.Parent = content
-
-    ----------------------------------------------------
-    -- Left
-    ----------------------------------------------------
-
-    local left = Instance.new("Frame")
-    left.Name = "LeftColumn"
-    left.Size = UDim2.new(.58,0,1,0)
-    left.BackgroundTransparency = 1
-    left.Parent = content
-
-    local leftPadding = Instance.new("UIPadding")
-    leftPadding.PaddingTop = UDim.new(0,2)
-    leftPadding.PaddingLeft = UDim.new(0,2)
-    leftPadding.PaddingRight = UDim.new(0,2)
-    leftPadding.PaddingBottom = UDim.new(0,2)
-    leftPadding.Parent = left
-
-    local leftLayout = Instance.new("UIListLayout")
-    leftLayout.Padding = UDim.new(0,12)
-    leftLayout.Parent = left
-
-    ----------------------------------------------------
-    -- Right
-    ----------------------------------------------------
-
-    local right = Instance.new("Frame")
-    right.Name = "RightColumn"
-    right.Size = UDim2.new(.42,-16,1,0)
-    right.BackgroundTransparency = 1
-    right.Parent = content
-
-    local rightPadding = Instance.new("UIPadding")
-    rightPadding.PaddingTop = UDim.new(0,2)
-    rightPadding.PaddingLeft = UDim.new(0,2)
-    rightPadding.PaddingRight = UDim.new(0,2)
-    rightPadding.PaddingBottom = UDim.new(0,2)
-    rightPadding.Parent = right
-
-    local rightLayout = Instance.new("UIListLayout")
-    rightLayout.Padding = UDim.new(0,12)
-    rightLayout.Parent = right
-
-    ----------------------------------------------------
-    -- Store
-    ----------------------------------------------------
-
-    ui.root = root
-    ui.screenGui = gui
-
-    ui.titleBar = titleBar
-
-    ui.leftColumn = left
-    ui.rightColumn = right
-
-    ui.minimizeButton = minimize
-    ui.closeButton = close
-
-    return gui
-end
-
-local function createStatusRow(parent, title)
-
-	local row = Instance.new("Frame")
-	row.BackgroundTransparency = 1
-	row.Size = UDim2.new(1,0,0,22)
-	row.Parent = parent
-
-	local list = Instance.new("UIListLayout")
-	list.FillDirection = Enum.FillDirection.Horizontal
-	list.VerticalAlignment = Enum.VerticalAlignment.Center
-	list.Parent = row
-
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(.38,0,1,0)
-	label.Font = Enum.Font.GothamMedium
-	label.Text = title
-	label.TextSize = 13
-	label.TextColor3 = Color3.fromRGB(150,150,150)
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = row
-
-	local value = Instance.new("TextLabel")
-	value.BackgroundTransparency = 1
-	value.Size = UDim2.new(.62,0,1,0)
-	value.Font = Enum.Font.Gotham
-	value.Text = "—"
-	value.TextSize = 13
-	value.TextColor3 = Color3.fromRGB(230,230,230)
-	value.TextXAlignment = Enum.TextXAlignment.Left
-	value.Parent = row
-
-	return value
-end
-
-local function createSectionLabel(parent, text)
-
-	local label = Instance.new("TextLabel")
-
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1,0,0,18)
-	label.Font = Enum.Font.GothamMedium
-	label.Text = text
-	label.TextSize = 13
-	label.TextColor3 = Color3.fromRGB(170,255,145)
-	label.TextXAlignment = Enum.TextXAlignment.Left
-
-	label.Parent = parent
-
-	return label
-end
-
-local function createInput(parent, name, placeholder, defaultText)
-
-	local container = Instance.new("Frame")
-	container.Name = name .. "Container"
-	container.Size = UDim2.new(1, 0, 0, 42)
-	container.BackgroundColor3 = Color3.fromRGB(18, 21, 27)
-	container.BorderSizePixel = 0
-	container.Parent = parent
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = container
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(70, 255, 150)
-	stroke.Transparency = 0.88
-	stroke.Parent = container
-
-	local box = Instance.new("TextBox")
-	box.Name = name
-	box.BackgroundTransparency = 1
-	box.ClearTextOnFocus = false
-	box.Position = UDim2.new(0, 12, 0, 0)
-	box.Size = UDim2.new(1, -24, 1, 0)
-
-	box.Font = Enum.Font.Gotham
-	box.TextSize = 14
-
-	box.Text = defaultText or ""
-	box.PlaceholderText = placeholder or ""
-
-	box.TextColor3 = Color3.fromRGB(235,235,235)
-	box.PlaceholderColor3 = Color3.fromRGB(120,125,132)
-
-	box.TextXAlignment = Enum.TextXAlignment.Left
-	box.TextYAlignment = Enum.TextYAlignment.Center
-
-	box.Parent = container
-
-	box.Focused:Connect(function()
-		stroke.Transparency = 0
-		stroke.Thickness = 1.5
-	end)
-
-	box.FocusLost:Connect(function()
-		stroke.Transparency = .88
-		stroke.Thickness = 1
-	end)
-
-	return box
-end
-
-local function createButton(parent, name, text, accentColor)
-
-	accentColor = accentColor or Color3.fromRGB(70, 255, 150)
-
-	local button = Instance.new("TextButton")
-	button.Name = name
-	button.Size = UDim2.new(1, 0, 0, 40)
-	button.AutoButtonColor = false
-	button.BackgroundColor3 = Color3.fromRGB(28, 32, 39)
-	button.BorderSizePixel = 0
-
-	button.Font = Enum.Font.GothamBold
-	button.Text = text
-	button.TextSize = 14
-	button.TextColor3 = Color3.fromRGB(235,235,235)
-
-	button.Parent = parent
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0,8)
-	corner.Parent = button
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = accentColor
-	stroke.Transparency = .82
-	stroke.Parent = button
-
-	local gradient = Instance.new("UIGradient")
-	gradient.Color = ColorSequence.new{
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(34,39,46)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(24,27,33))
-	}
-	gradient.Rotation = 90
-	gradient.Parent = button
-
-	-----------------------------------
-	-- Hover
-	-----------------------------------
-
-	button.MouseEnter:Connect(function()
-
-		button.BackgroundColor3 = Color3.fromRGB(40,45,54)
-
-		stroke.Transparency = .15
-		stroke.Thickness = 1.5
-
-	end)
-
-	button.MouseLeave:Connect(function()
-
-		button.BackgroundColor3 = Color3.fromRGB(28,32,39)
-
-		stroke.Transparency = .82
-		stroke.Thickness = 1
-
-	end)
-
-	-----------------------------------
-	-- Press
-	-----------------------------------
-
-	button.MouseButton1Down:Connect(function()
-
-		button.Size = button.Size - UDim2.fromOffset(0,2)
-
-	end)
-
-	button.MouseButton1Up:Connect(function()
-
-		button.Size = UDim2.new(1,0,0,40)
-
-	end)
-
-	return button
-end
-
-local function createSmallButton(parent, name, text)
-
-	local b = createButton(parent, name, text, Color3.fromRGB(90,170,255))
-	b.Size = UDim2.new(0.5, 0, 1, 0)
-
-	return b
-end
-
-local function createPrimaryButton(parent)
-
-	local b = createButton(
-		parent,
-		"StartButton",
-		"START",
-		Color3.fromRGB(60,255,120)
-	)
-
-	b.TextColor3 = Color3.new(1,1,1)
-
-	return b
-end
-
-local function createDangerButton(parent)
-
-	local b = createButton(
-		parent,
-		"StopButton",
-		"STOP",
-		Color3.fromRGB(255,90,90)
-	)
-
-	return b
-end
-
-local function clamp(value, minValue, maxValue)
-	return math.clamp(value, minValue, maxValue)
-end
-
-local function createSpecialButton(parent)
-
-	local b = createButton(
-		parent,
-		"SuperWaterButton",
-		"SUPER WATER",
-		Color3.fromRGB(90,170,255)
-	)
-
-	return b
-end
-
-local function createSlider(parent, title, minValue, maxValue, defaultValue)
-
-	local container = Instance.new("Frame")
-	container.Name = title:gsub("%s+", "") .. "Slider"
-	container.Size = UDim2.new(1,0,0,70)
-	container.BackgroundTransparency = 1
-	container.Parent = parent
-
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0,8)
-	layout.Parent = container
-
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1,0,0,18)
-	label.Font = Enum.Font.GothamMedium
-	label.Text = string.format("%s: %.1f", title, defaultValue)
-	label.TextSize = 13
-	label.TextColor3 = Color3.fromRGB(225,225,225)
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = container
-
-	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1,0,0,8)
-	track.BackgroundColor3 = Color3.fromRGB(35,40,48)
-	track.BorderSizePixel = 0
-	track.Parent = container
-
-	Instance.new("UICorner", track).CornerRadius = UDim.new(1,0)
-
-	local fill = Instance.new("Frame")
-	fill.Size = UDim2.fromScale(
-		(defaultValue - minValue) / (maxValue - minValue),
-		1
-	)
-	fill.BackgroundColor3 = Color3.fromRGB(70,255,150)
-	fill.BorderSizePixel = 0
-	fill.Parent = track
-
-	Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
-
-	local knob = Instance.new("Frame")
-	knob.Size = UDim2.fromOffset(16,16)
-	knob.AnchorPoint = Vector2.new(.5,.5)
-	knob.Position = UDim2.new(fill.Size.X.Scale,0,.5,0)
-	knob.BackgroundColor3 = Color3.fromRGB(245,245,245)
-	knob.BorderSizePixel = 0
-	knob.Parent = track
-
-	Instance.new("UICorner", knob).CornerRadius = UDim.new(1,0)
-
-	local hitbox = Instance.new("TextButton")
-	hitbox.BackgroundTransparency = 1
-	hitbox.Size = UDim2.new(1,0,1,10)
-	hitbox.Position = UDim2.new(0,0,0,-5)
-	hitbox.Text = ""
-	hitbox.Parent = track
-
-	return {
-		container = container,
-		label = label,
-		track = track,
-		fill = fill,
-		knob = knob,
-		hitbox = hitbox,
-		min = minValue,
-		max = maxValue,
-		value = defaultValue
-	}
-end
-
-local function createCard(parent, title, height)
-	local card = Instance.new("Frame")
-	card.Name = title:gsub("%s+", "") .. "Card"
-	card.Size = UDim2.new(1, 0, 0, height)
-	card.BackgroundColor3 = Color3.fromRGB(20, 23, 29)
-	card.BorderSizePixel = 0
-	card.Parent = parent
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = card
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(65, 255, 145)
-	stroke.Transparency = 0.82
-	stroke.Parent = card
-
-	local padding = Instance.new("UIPadding")
-	padding.PaddingTop = UDim.new(0, 12)
-	padding.PaddingBottom = UDim.new(0, 12)
-	padding.PaddingLeft = UDim.new(0, 12)
-	padding.PaddingRight = UDim.new(0, 12)
-	padding.Parent = card
-
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0, 8)
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = card
-
-	local header = Instance.new("TextLabel")
-	header.BackgroundTransparency = 1
-	header.Size = UDim2.new(1, 0, 0, 22)
-	header.Font = Enum.Font.GothamBold
-	header.Text = title
-	header.TextSize = 15
-	header.TextColor3 = Color3.fromRGB(175, 255, 145)
-	header.TextXAlignment = Enum.TextXAlignment.Left
-	header.Parent = card
-
-	return card
-end
-
-local function createPlayerCard()
-
-	local card = createCard(ui.leftColumn, "Target Player", 95)
-
-	createSectionLabel(card, "Username / User ID")
-
-	ui.playerInput = createInput(
-		card,
-		"PlayerInput",
-		"Enter username or user ID"
-	)
-
-	return card
-end
-
-local function createSprinklerCard()
-
-	local card = createCard(ui.leftColumn, "Sprinkler Selection", 165)
-
-	local grid = Instance.new("Frame")
-	grid.BackgroundTransparency = 1
-	grid.Size = UDim2.new(1,0,0,90)
-	grid.Parent = card
-
-	local layout = Instance.new("UIGridLayout")
-	layout.CellSize = UDim2.new(.48,0,0,38)
-	layout.CellPadding = UDim2.new(0,8,0,8)
-	layout.Parent = grid
-
-	ui.typeButtons = {}
-
-	for _,name in ipairs({
-		"Common",
-		"Uncommon",
-		"Rare",
-		"Legendary"
-	}) do
-
-		ui.typeButtons[name] =
-			createSmallButton(grid,name,name)
-
-	end
-
-	local modeFrame = Instance.new("Frame")
-	modeFrame.BackgroundTransparency = 1
-	modeFrame.Size = UDim2.new(1,0,0,40)
-	modeFrame.Parent = card
-
-	local modeLayout = Instance.new("UIListLayout")
-	modeLayout.FillDirection = Enum.FillDirection.Horizontal
-	modeLayout.Padding = UDim.new(0,8)
-	modeLayout.Parent = modeFrame
-
-	ui.modeSingle =
-		createSmallButton(modeFrame,"Single","Single")
-
-	ui.modeSequence =
-		createSmallButton(modeFrame,"Sequence","Sequence")
-end
-
-local function createPlacementCard()
-
-	local card = createCard(ui.leftColumn,"Placement Settings",165)
-
-	local radiusSlider = createSlider(
-		card,
-		"Radius",
-		MIN_RADIUS,
-		MAX_RADIUS,
-		DEFAULT_RADIUS
-	)
-
-	ui.radiusSlider = radiusSlider
-	ui.radius = radiusSlider
-	ui.radiusLabel = radiusSlider.label
-	ui.radiusFill = radiusSlider.fill
-
-	ui.delayInput = createInput(
-		card,
-		"DelayInput",
-		"Delay (seconds)",
-		tostring(DEFAULT_DELAY),
-		true
-	)
-
-	return card
-end
-
-local function createActionCard()
-
-	local card = createCard(ui.leftColumn,"Actions",95)
-
-	local row = Instance.new("Frame")
-	row.BackgroundTransparency = 1
-	row.Size = UDim2.new(1,0,0,42)
-	row.Parent = card
-
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0,10)
-	layout.Parent = row
-
-	ui.startButton = createPrimaryButton(row)
-	ui.startButton.Size = UDim2.new(.33,-6,1,0)
-
-	ui.stopButton = createDangerButton(row)
-	ui.stopButton.Size = UDim2.new(.33,-6,1,0)
-
-	ui.superButton = createSpecialButton(row)
-	ui.superButton.Size = UDim2.new(.34,-6,1,0)
-end
-
-local function createStatusCard()
-
-	local card = createCard(ui.rightColumn, "Garden Status", 170)
-
-	ui.statusDetected = createStatusRow(card, "Player")
-	ui.statusOwner = createStatusRow(card, "Owner ID")
-	ui.statusPlot = createStatusRow(card, "Plot")
-	ui.statusPlants = createStatusRow(card, "Plants")
-	ui.statusAction = createStatusRow(card, "Status")
-
-	ui.statusDetected.Text = "—"
-	ui.statusOwner.Text = "—"
-	ui.statusPlot.Text = "—"
-	ui.statusPlants.Text = "—"
-	ui.statusAction.Text = "Idle"
-
-	return card
-
-end
-
-local function createLogCard()
-
-	local card = createCard(ui.rightColumn, "Activity Log", 330)
-
-	local log = Instance.new("ScrollingFrame")
-	log.Name = "LogBox"
-	log.Size = UDim2.new(1,0,1,-30)
-	log.BackgroundTransparency = 1
-	log.BorderSizePixel = 0
-	log.ScrollBarThickness = 5
-	log.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	log.CanvasSize = UDim2.new()
-	log.Parent = card
-
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0,6)
-	layout.Parent = log
-
-	ui.logBox = log
-	ui.logLayout = layout
-
-	return card
-
-end
-
-local function addLog(text, color)
-
-	color = color or Color3.fromRGB(225,225,225)
-
-	local label = Instance.new("TextLabel")
-
-	label.BackgroundColor3 = Color3.fromRGB(24,28,34)
-	label.BorderSizePixel = 0
-	label.Size = UDim2.new(1,-4,0,26)
-
-	label.Font = Enum.Font.Gotham
-	label.TextSize = 13
-	label.TextColor3 = color
-
-	label.TextXAlignment = Enum.TextXAlignment.Left
-
-	label.Text = "  "..os.date("%H:%M:%S").."   "..text
-
-	label.Parent = ui.logBox
-
-	Instance.new("UICorner",label).CornerRadius = UDim.new(0,6)
-
-	task.defer(function()
-
-		ui.logBox.CanvasPosition =
-			Vector2.new(
-				0,
-				ui.logLayout.AbsoluteContentSize.Y
-			)
-
-	end)
-
-end
-
-local function createInterface()
-
-	createWindow()
-
-	createPlayerCard()
-
-	createSprinklerCard()
-
-	createPlacementCard()
-
-	createActionCard()
-
-	createStatusCard()
-
-	createLogCard()
-
-end
-
-local function initializeUI()
-
-	createInterface()
-
-	ui.selectedType = "Common"
-	ui.mode = "Sequence"
-
-	refreshSelectionButtons()
-
-	--------------------------------------------------
-	-- Sprinkler Buttons
-	--------------------------------------------------
-
-	for typeName,button in pairs(ui.typeButtons) do
-
-		button.MouseButton1Click:Connect(function()
-
-			ui.selectedType = typeName
-
-			setMode("Single")
-
-			refreshSelectionButtons()
-
-		end)
-
-	end
-
-	--------------------------------------------------
-	-- Mode
-	--------------------------------------------------
-
-	ui.modeSingle.MouseButton1Click:Connect(function()
-
-		setMode("Single")
-
-	end)
-
-	ui.modeSequence.MouseButton1Click:Connect(function()
-
-		setMode("Sequence")
-
-	end)
-
-	--------------------------------------------------
-	-- Actions
-	--------------------------------------------------
-
-	ui.startButton.MouseButton1Click:Connect(startPressed)
-
-	ui.stopButton.MouseButton1Click:Connect(stopPressed)
-
-	ui.superButton.MouseButton1Click:Connect(superWaterPressed)
-
-	--------------------------------------------------
-	-- Delay
-	--------------------------------------------------
-
-	ui.delayInput.FocusLost:Connect(function()
-
-		local value = tonumber(ui.delayInput.Text)
-
-		if not value then
-			value = DEFAULT_DELAY
-		end
-
-		value = clamp(value, MIN_DELAY, MAX_DELAY)
-
-		ui.delayInput.Text = tostring(value)
-
-		updateDelayLabel(value)
-
-	end)
-
-	--------------------------------------------------
-	-- Slider
-	--------------------------------------------------
-
-	local slider = ui.radius
-
-	local dragging = false
-
-	local function update(mouseX)
-
-		local left = slider.track.AbsolutePosition.X
-
-		local width = slider.track.AbsoluteSize.X
-
-		local alpha = math.clamp(
-			(mouseX-left)/width,
-			0,
-			1
-		)
-
-		local value =
-			slider.min +
-			(alpha*(slider.max-slider.min))
-
-		value = math.floor(value*10+.5)/10
-
-		slider.value = value
-
-		slider.fill.Size = UDim2.fromScale(alpha,1)
-
-		slider.knob.Position = UDim2.new(alpha,0,.5,0)
-
-		slider.label.Text =
-			string.format("Radius: %.1f",value)
-
-		updateSliderFill(value)
-
-	end
-
-	slider.hitbox.InputBegan:Connect(function(input)
-
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-			dragging = true
-
-			update(input.Position.X)
-
-		end
-
-	end)
-
-	slider.hitbox.InputChanged:Connect(function(input)
-
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-
-			update(input.Position.X)
-
-		end
-
-	end)
-
-	UserInputService.InputEnded:Connect(function(input)
-
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-			dragging = false
-
-		end
-
-	end)
-
-	--------------------------------------------------
-	-- Close
-	--------------------------------------------------
-
-	ui.closeButton.MouseButton1Click:Connect(function()
-
-		ui.screenGui:Destroy()
-
-	end)
-
-	--------------------------------------------------
-	-- Minimize
-	--------------------------------------------------
-
-	local expanded = ui.root.Size
-
-	local minimized = UDim2.fromOffset(
-		expanded.X.Offset,
-		48
-	)
-
-	local minimizedState = false
-
-	ui.minimizeButton.MouseButton1Click:Connect(function()
-
-		minimizedState = not minimizedState
-
-		for _,obj in ipairs(ui.root:GetChildren()) do
-
-			if obj.Name == "Content" then
-
-				obj.Visible = not minimizedState
-
-			end
-
-		end
-
-		ui.root.Size =
-			minimizedState and minimized or expanded
-
-		ui.minimizeButton.Text =
-			minimizedState and "+" or "━"
-
-	end)
-
-	--------------------------------------------------
-	-- Dragging
-	--------------------------------------------------
-
-	local draggingWindow = false
-
-	local dragStart
-
-	local startPos
-
-	ui.titleBar.InputBegan:Connect(function(input)
-
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-			draggingWindow = true
-
-			dragStart = input.Position
-
-			startPos = ui.root.Position
-
-		end
-
-	end)
-
-	UserInputService.InputChanged:Connect(function(input)
-
-		if not draggingWindow then
-			return
-		end
-
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement then
-			return
-		end
-
-		local delta = input.Position-dragStart
-
-		ui.root.Position =
-			UDim2.new(
-				startPos.X.Scale,
-				startPos.X.Offset+delta.X,
-				startPos.Y.Scale,
-				startPos.Y.Offset+delta.Y
-			)
-
-	end)
-
-	UserInputService.InputEnded:Connect(function(input)
-
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-			draggingWindow = false
-
-		end
-
-	end)
-
-	addLog("UI Loaded.", Color3.fromRGB(80,255,120))
-
-end
-
-local function formatTime(value)
-	return string.format("%.1f", value)
-end
-
-local function updateStatusField(field, text)
-	if field and field:IsA("TextLabel") then
-		field.Text = text
-	end
-end
-
-local function logStatus(message)
-	if not ui.logBox then
-		return
-	end
-	local entry = Instance.new("TextLabel")
-	entry.BackgroundTransparency = 1
-	entry.Size = UDim2.new(1, 0, 0, 18)
-	entry.Font = Enum.Font.RobotoMono
-	entry.Text = "• " .. message
-	entry.TextColor3 = Color3.fromRGB(194, 255, 168)
-	entry.TextSize = 12
-	entry.TextXAlignment = Enum.TextXAlignment.Left
-	entry.TextYAlignment = Enum.TextYAlignment.Center
-	entry.Parent = ui.logBox
-	ui.logBox.CanvasSize = UDim2.new(0, 0, 0, ui.logLayout.AbsoluteContentSize.Y)
-	ui.logBox.CanvasPosition = Vector2.new(0, ui.logLayout.AbsoluteContentSize.Y)
-end
-
-local function clearLog()
-	if ui.logBox then
-		for _, child in ipairs(ui.logBox:GetChildren()) do
-			if child:IsA("TextLabel") then
-				child:Destroy()
-			end
-		end
-		ui.logBox.CanvasSize = UDim2.new(0, 0, 0, 0)
-	end
-end
-
-local function parseTargetInput(input)
-	local trimmed = tostring(input):gsub("^%s*(.-)%s*$", "%1")
-	if trimmed == "" then
-		return nil
-	end
-	return trimmed
+local function getCharacter()
+	return player.Character or player.CharacterAdded:Wait()
 end
 
 local function findTargetPlayer(targetQuery)
-	if not targetQuery then
-		return nil
-	end
+	if not targetQuery or targetQuery == "" then return nil end
 	for _, p in ipairs(Players:GetPlayers()) do
-		if string.lower(p.Name) == string.lower(targetQuery) then
-			return p
-		end
-		if tostring(p.UserId) == targetQuery then
+		if string.lower(p.Name) == string.lower(targetQuery) or tostring(p.UserId) == targetQuery then
 			return p
 		end
 	end
@@ -1101,12 +36,9 @@ end
 
 local function findPlotForUser(userId)
 	local gardens = workspace:FindFirstChild("Gardens") or workspace:FindFirstChild("Plots")
-	if not gardens then
-		return nil
-	end
+	if not gardens then return nil end
 	for _, plot in ipairs(gardens:GetChildren()) do
-		local owner = plot:GetAttribute("OwnerUserId")
-		if owner and tostring(owner) == tostring(userId) then
+		if tostring(plot:GetAttribute("OwnerUserId")) == tostring(userId) then
 			return plot
 		end
 	end
@@ -1114,376 +46,194 @@ local function findPlotForUser(userId)
 end
 
 local function getPlantPosition(plant)
-	if not plant then
-		return nil
-	end
-	if plant:IsA("Model") then
-		if plant.PrimaryPart then
-			return plant.PrimaryPart.Position
-		end
-		local ok, pivot = pcall(function()
-			return plant:GetPivot()
-		end)
-		if ok and pivot then
-			return pivot.Position
-		end
-	elseif plant:IsA("BasePart") then
-		return plant.Position
-	end
+	if not plant then return nil end
+	if plant:IsA("Model") and plant.PrimaryPart then return plant.PrimaryPart.Position end
+	local ok, pivot = pcall(function() return plant:GetPivot() end)
+	if ok and pivot then return pivot.Position end
+	if plant:IsA("BasePart") then return plant.Position end
 	for _, child in ipairs(plant:GetDescendants()) do
-		if child:IsA("BasePart") then
-			return child.Position
-		end
+		if child:IsA("BasePart") then return child.Position end
 	end
 	return nil
 end
 
 local function getFirstAvailablePlant(plot)
 	local plantsFolder = plot:FindFirstChild("Plants")
-	if not plantsFolder then
-		return nil, 0
-	end
+	if not plantsFolder then return nil end
 	local plants = plantsFolder:GetChildren()
-	if #plants == 0 then
-		return nil, 0
-	end
 	for _, plant in ipairs(plants) do
-		local pos = getPlantPosition(plant)
-		if pos then
-			return plant, #plants
-		end
+		if getPlantPosition(plant) then return plant end
 	end
-	return plants[1], #plants
-end
-
-local function buildOctagonOffsets(radius)
-	local offsets = {}
-	for k = 1, 8 do
-		local angle = (k - 1) * (2 * math.pi / 8)
-		offsets[k] = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-	end
-	return offsets
+	return plants[1]
 end
 
 local function raycastToGround(position)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { character }
-	local origin = position + Vector3.new(0, 15, 0)
-	local direction = Vector3.new(0, -100, 0)
-	local result = workspace:Raycast(origin, direction, params)
-	if result and result.Position then
-		return result.Position
+	params.FilterDescendantsInstances = { getCharacter() }
+	local result = workspace:Raycast(position + Vector3.new(0, 15, 0), Vector3.new(0, -100, 0), params)
+	return result and result.Position or position
+end
+
+local function equipTool(toolName)
+	local char = getCharacter()
+	local tool = player.Backpack:FindFirstChild(toolName) or char:FindFirstChild(toolName)
+	if not tool then return nil end
+	
+	if tool.Parent ~= char then
+		local humanoid = char:FindFirstChild("Humanoid")
+		if humanoid then humanoid:EquipTool(tool) end
+		task.wait(0.2)
 	end
-	return position
-end
-
-local function getToolForSprinkler(name)
-	return backpack:FindFirstChild(name) or character:FindFirstChild(name)
-end
-
-local function equipTool(tool)
-	if not tool or tool.Parent == character then
-		return true
-	end
-	humanoid:EquipTool(tool)
-	local deadline = tick() + 2
-	repeat
-		task.wait()
-	until tool.Parent == character or tick() > deadline
-	return tool.Parent == character
-end
-
-local function getToolForWateringCan()
-	return backpack:FindFirstChild(WATERING_CAN_NAME) or character:FindFirstChild(WATERING_CAN_NAME)
+	return tool
 end
 
 local function placeSprinklerAt(position, sprinklerName, plotId)
-	local tool = getToolForSprinkler(sprinklerName)
-	if not tool then
-		logStatus("Tool not available: " .. sprinklerName)
-		return false
-	end
-	if not equipTool(tool) then
-		logStatus("Could not equip " .. sprinklerName)
-		return false
-	end
+	local tool = equipTool(sprinklerName)
+	if not tool then return false end
+	
 	local groundPosition = raycastToGround(position)
-	local success, err = pcall(function()
+	pcall(function()
 		Networking.Place.PlaceSprinkler:Fire(groundPosition, sprinklerName, tool, plotId)
 	end)
-	if not success then
-		warn("Sprinkler placement error:", err)
-		return false
-	end
 	return true
 end
 
-local function useSuperWateringCanAt(position)
-	local tool = getToolForWateringCan()
-	if not tool then
-		logStatus("Super Watering Can not found.")
-		return false
-	end
-	if not equipTool(tool) then
-		logStatus("Could not equip Super Watering Can.")
-		return false
-	end
-	local success, err = pcall(function()
-		Networking.WateringCan.UseWateringCan:Fire(position, WATERING_CAN_NAME, tool)
-	end)
-	if not success then
-		warn("Watering can use error:", err)
-		return false
-	end
-	return true
-end
+-- --- ACTIONS ---
 
-function updateSliderFill(value)
-	local slice = (value - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)
-	slice = clamp(slice, 0, 1)
-	if ui.radiusFill then
-		ui.radiusFill.Size = UDim2.new(slice, 0, 1, 0)
-	end
-	if ui.radiusLabel then
-		ui.radiusLabel.Text = "Radius: " .. formatTime(value) .. " studs"
-	end
-end
-
-function refreshSelectionButtons()
-	for key, btn in pairs(ui.typeButtons) do
-		if ui.selectedType == key then
-			btn.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
-			btn.TextColor3 = Color3.fromRGB(233, 255, 190)
-		else
-			btn.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
-			btn.TextColor3 = Color3.fromRGB(178, 255, 137)
-		end
-	end
-
-	if ui.modeSingle and ui.modeSequence then
-		if ui.mode == "Single" then
-			ui.modeSingle.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
-			ui.modeSingle.TextColor3 = Color3.fromRGB(233, 255, 190)
-			ui.modeSequence.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
-			ui.modeSequence.TextColor3 = Color3.fromRGB(178, 255, 137)
-		else
-			ui.modeSequence.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
-			ui.modeSequence.TextColor3 = Color3.fromRGB(233, 255, 190)
-			ui.modeSingle.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
-			ui.modeSingle.TextColor3 = Color3.fromRGB(178, 255, 137)
-		end
-	end
-end
-
-function setMode(newMode)
-	ui.mode = newMode
-	updateStatusField(ui.statusAction, "Mode set to " .. newMode)
-	refreshSelectionButtons()
-end
-
-function updateDelayLabel(value)
-	if ui.delayInput then
-		ui.delayInput.Text = formatTime(value)
-	end
-end
-
-local function getSelectedSprinklerOrder()
-	if ui.mode == "Sequence" then
-		return { "Common", "Uncommon", "Rare", "Legendary" }
-	end
-	if ui.selectedType and SPRINKLER_TYPES[ui.selectedType] then
-		return { ui.selectedType }
-	end
-	return { "Common" }
-end
-
-local function runPlacementCycle()
-	local targetQuery = parseTargetInput(ui.playerInput.Text)
-	if not targetQuery or targetQuery == "" then
-		logStatus("Please enter a valid username or user ID.")
-		return
-	end
-
-	local delayValue = tonumber(ui.delayInput.Text) or DEFAULT_DELAY
-	delayValue = clamp(delayValue, MIN_DELAY, MAX_DELAY)
-	ui.delayInput.Text = formatTime(delayValue)
-	updateDelayLabel(delayValue)
-
-	local radiusValue = tonumber(ui.radiusLabel.Text:match("[0-9]+%.?[0-9]*")) or DEFAULT_RADIUS
-	radiusValue = clamp(radiusValue, MIN_RADIUS, MAX_RADIUS)
-	updateSliderFill(radiusValue)
-
-	clearLog()
-	logStatus("Searching for player...")
-	updateStatusField(ui.statusAction, "Searching for player...")
+local function runPlacementCycle(targetQuery)
+	if isRunning then return end
+	isRunning = true
 
 	local targetPlayer = findTargetPlayer(targetQuery)
-	if not targetPlayer then
-		updateStatusField(ui.statusAction, "Player not found")
-		logStatus("Player not found.")
-		updateStatusField(ui.statusDetected, "Detected: —")
-		return
-	end
+	local plot = targetPlayer and findPlotForUser(targetPlayer.UserId)
+	local plant = plot and getFirstAvailablePlant(plot)
+	local centerPosition = plant and getPlantPosition(plant)
 
-	updateStatusField(ui.statusDetected, "Detected: " .. targetPlayer.Name)
-	logStatus("Player found.")
-	updateStatusField(ui.statusAction, "Locating garden...")
-
-	local plot = findPlotForUser(targetPlayer.UserId)
-	if not plot then
-		updateStatusField(ui.statusAction, "Garden missing")
-		logStatus("Garden not found for player.")
-		updateStatusField(ui.statusOwner, "OwnerUserId: —")
-		updateStatusField(ui.statusPlot, "Plot Name: —")
-		updateStatusField(ui.statusPlants, "Plant Count: —")
-		return
-	end
-
-	updateStatusField(ui.statusOwner, "OwnerUserId: " .. tostring(targetPlayer.UserId))
-	updateStatusField(ui.statusPlot, "Plot Name: " .. tostring(plot.Name))
-	logStatus("Locating garden...")
-	logStatus("Garden found.")
-	updateStatusField(ui.statusAction, "Finding plant...")
-
-	local plant, plantCount = getFirstAvailablePlant(plot)
-	if not plant then
-		updateStatusField(ui.statusAction, "No plant available")
-		logStatus("No plants available in garden.")
-		updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
-		return
-	end
-
-	updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
-	local centerPosition = getPlantPosition(plant)
 	if not centerPosition then
-		updateStatusField(ui.statusAction, "Invalid plant")
-		logStatus("Unable to determine plant position.")
+		warn("Could not find player, plot, or plant.")
+		isRunning = false
 		return
 	end
-	logStatus("Plant located.")
-	updateStatusField(ui.statusAction, "Preparing sprinklers...")
 
-	local offsets = buildOctagonOffsets(radiusValue)
 	local plotId = tonumber(plot.Name:match("%d+")) or 0
-	local order = getSelectedSprinklerOrder()
 
-	for index, sprinklerKey in ipairs(order) do
-		if cancelRequested then
-			logStatus("Placement stopped.")
-			updateStatusField(ui.statusAction, "Stopped")
-			break
-		end
-
-		local sprinklerName = SPRINKLER_TYPES[sprinklerKey]
-		local statusText = "Spawning " .. sprinklerKey .. "..."
-		updateStatusField(ui.statusAction, statusText)
-		logStatus(statusText)
-
-		local placementIndex = ((index - 1) % #offsets) + 1
-		local targetPosition = centerPosition + offsets[placementIndex]
-		local placed = placeSprinklerAt(targetPosition, sprinklerName, plotId)
-		if placed then
-			logStatus("Placed " .. sprinklerKey .. "")
-		else
-			logStatus("Failed to place " .. sprinklerKey .. ", moving on.")
-		end
-
-		if index < #order and not cancelRequested then
-			logStatus("Waiting " .. formatTime(delayValue) .. " seconds...")
-			task.wait(delayValue)
-		end
+	for k, sprinklerName in ipairs(SPRINKLER_TYPES) do
+		local angle = (k - 1) * (2 * math.pi / 8)
+		local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
+		
+		placeSprinklerAt(centerPosition + offset, sprinklerName, plotId)
+		task.wait(DEFAULT_DELAY)
 	end
-
-	if not cancelRequested then
-		logStatus("Completed successfully.")
-		updateStatusField(ui.statusAction, "Completed")
-	end
-	cancelRequested = false
+	
 	isRunning = false
 end
 
-function superWaterPressed()
-	if isRunning then
-		logStatus("Cannot use Super Watering Can while placement is running.")
-		return
-	end
-
-	local targetQuery = parseTargetInput(ui.playerInput.Text)
-	if not targetQuery or targetQuery == "" then
-		logStatus("Please enter a valid username or user ID.")
-		return
-	end
-
-	logStatus("Searching for player...")
-	updateStatusField(ui.statusAction, "Searching for player...")
+local function waterPlant(targetQuery)
+	if isRunning then return end
 
 	local targetPlayer = findTargetPlayer(targetQuery)
-	if not targetPlayer then
-		updateStatusField(ui.statusAction, "Player not found")
-		logStatus("Player not found.")
-		return
-	end
+	local plot = targetPlayer and findPlotForUser(targetPlayer.UserId)
+	local plant = plot and getFirstAvailablePlant(plot)
+	local centerPosition = plant and getPlantPosition(plant)
 
-	updateStatusField(ui.statusDetected, "Detected: " .. targetPlayer.Name)
-	logStatus("Player found.")
-	updateStatusField(ui.statusAction, "Locating garden...")
-
-	local plot = findPlotForUser(targetPlayer.UserId)
-	if not plot then
-		updateStatusField(ui.statusAction, "Garden missing")
-		logStatus("Garden not found for player.")
-		return
-	end
-
-	updateStatusField(ui.statusOwner, "OwnerUserId: " .. tostring(targetPlayer.UserId))
-	updateStatusField(ui.statusPlot, "Plot Name: " .. tostring(plot.Name))
-	logStatus("Garden found.")
-	updateStatusField(ui.statusAction, "Finding plant...")
-
-	local plant, plantCount = getFirstAvailablePlant(plot)
-	if not plant then
-		updateStatusField(ui.statusAction, "No plant available")
-		logStatus("No plants available in garden.")
-		return
-	end
-
-	updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
-	local centerPosition = getPlantPosition(plant)
 	if not centerPosition then
-		updateStatusField(ui.statusAction, "Invalid plant")
-		logStatus("Unable to determine plant position.")
+		warn("Could not find player, plot, or plant.")
 		return
 	end
 
-	updateStatusField(ui.statusAction, "Using Super Watering Can...")
-	logStatus("Using Super Watering Can...")
-
-	if useSuperWateringCanAt(centerPosition) then
-		logStatus("Super Watering Can activated.")
-		updateStatusField(ui.statusAction, "Super Watering Can used")
-	else
-		logStatus("Super Watering Can failed.")
-		updateStatusField(ui.statusAction, "Failed")
+	local tool = equipTool(WATERING_CAN_NAME)
+	if tool then
+		pcall(function()
+			Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, tool)
+		end)
 	end
 end
 
-function startPressed()
-	if isRunning then
-		return
+-- --- MINIMAL UI ---
+
+local function createSimpleUI()
+	local existing = playerGui:FindFirstChild("MiniSprinklerPanel")
+	if existing then existing:Destroy() end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MiniSprinklerPanel"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0, 200, 0, 140)
+	frame.Position = UDim2.new(0.5, -100, 0.8, -140)
+	frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+	local stroke = Instance.new("UIStroke", frame)
+	stroke.Color = Color3.fromRGB(70, 255, 150)
+	stroke.Thickness = 2
+
+	local layout = Instance.new("UIListLayout", frame)
+	layout.Padding = UDim.new(0, 8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+
+	local targetInput = Instance.new("TextBox")
+	targetInput.Size = UDim2.new(0.9, 0, 0, 30)
+	targetInput.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	targetInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+	targetInput.Font = Enum.Font.GothamMedium
+	targetInput.TextSize = 14
+	targetInput.PlaceholderText = "Player Name"
+	targetInput.Text = player.Name -- Defaults to you
+	targetInput.Parent = frame
+	Instance.new("UICorner", targetInput).CornerRadius = UDim.new(0, 4)
+
+	local function makeButton(text, color)
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(0.9, 0, 0, 35)
+		btn.BackgroundColor3 = color
+		btn.TextColor3 = Color3.fromRGB(25, 25, 30)
+		btn.Font = Enum.Font.GothamBold
+		btn.TextSize = 14
+		btn.Text = text
+		btn.Parent = frame
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+		return btn
 	end
-	isRunning = true
-	cancelRequested = false
-	currentTask = task.spawn(runPlacementCycle)
+
+	local placeBtn = makeButton("Place Sprinklers", Color3.fromRGB(70, 255, 150))
+	local waterBtn = makeButton("Water Plant", Color3.fromRGB(90, 170, 255))
+
+	-- Connections
+	placeBtn.MouseButton1Click:Connect(function()
+		task.spawn(runPlacementCycle, targetInput.Text)
+	end)
+
+	waterBtn.MouseButton1Click:Connect(function()
+		task.spawn(waterPlant, targetInput.Text)
+	end)
+
+	-- Make it draggable
+	local dragging, dragStart, startPos
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
 end
 
-function stopPressed()
-	if not isRunning then
-		return
-	end
-	cancelRequested = true
-	updateStatusField(ui.statusAction, "Stopping...")
-	logStatus("Stop requested.")
-end
-
-initializeUI()
+createSimpleUI()
