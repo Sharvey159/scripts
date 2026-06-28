@@ -182,7 +182,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "🎒 ALT PICKER V2", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+mkLabel(hdr, "🎒 ALT PICKER V3", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
