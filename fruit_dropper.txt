@@ -618,6 +618,81 @@ end)
 -- =====================
 local droppingByVal = false
 
+local function parseDropInput(text)
+	text = text:gsub("%s+", "")
+
+	-- Plain number = original target mode
+	if not text:match("^[<>]") then
+		local n = tonumber(text)
+		if n then
+			return {
+				type = "target",
+				value = n,
+			}
+		end
+		return nil
+	end
+
+	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
+	if min and max then
+		return {
+			type = "range",
+			min = tonumber(min),
+			max = tonumber(max),
+		}
+	end
+
+	local n = text:match("^>=(.+)$")
+	if n then
+		return {
+			type = "gte",
+			value = tonumber(n),
+		}
+	end
+
+	n = text:match("^<=(.+)$")
+	if n then
+		return {
+			type = "lte",
+			value = tonumber(n),
+		}
+	end
+
+	n = text:match("^>(.+)$")
+	if n then
+		return {
+			type = "gt",
+			value = tonumber(n),
+		}
+	end
+
+	n = text:match("^<(.+)$")
+	if n then
+		return {
+			type = "lt",
+			value = tonumber(n),
+		}
+	end
+
+	return nil
+end
+
+local function matchesFilter(value, filter)
+	if filter.type == "gt" then
+		return value > filter.value
+	elseif filter.type == "lt" then
+		return value < filter.value
+	elseif filter.type == "gte" then
+		return value >= filter.value
+	elseif filter.type == "lte" then
+		return value <= filter.value
+	elseif filter.type == "range" then
+		return value > filter.min and value < filter.max
+	end
+
+	return false
+end
+
 dropValBtn.MouseButton1Click:Connect(function()
 	if currentScanMode == "locked" then
 		dropValStatusLbl.Text = "⚠️ Switch to Delivery scan first"
@@ -638,58 +713,85 @@ dropValBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local target = tonumber(dropValInput.Text) or 300
-	local sorted = {}
-	for _, e in ipairs(backpackFruits) do
-		if not e.favorite then
-			table.insert(sorted, e)
-		end
-	end
-	table.sort(sorted, function(a, b)
-		return a.value > b.value
-	end)
+	local filter = parseDropInput(dropValInput.Text or "")
 
-	-- Allow going slightly over the target (in millions)
-	local ALLOWED_THRESHOLD = 3 -- 1M
+	if not filter then
+		dropValStatusLbl.Text = "⚠️ Invalid input"
+		return
+	end
 
 	local queue = {}
 	local total = 0
 
-	for _, e in ipairs(sorted) do
-		local newTotal = total + e.value
+	local function rebuildQueue()
+		table.clear(queue)
+		total = 0
 
-		-- If adding this fruit keeps us under the target,
-		-- always take it.
-		if newTotal <= target then
-			table.insert(queue, e)
-			total = newTotal
+		local sorted = {}
 
-		-- If it goes over, only take it if we're within
-		-- the allowed threshold.
-		elseif newTotal <= target + ALLOWED_THRESHOLD then
-			table.insert(queue, e)
-			total = newTotal
-			break
-
-			-- Otherwise skip it and try a smaller fruit.
+		for _, e in ipairs(backpackFruits) do
+			if not e.favorite then
+				table.insert(sorted, e)
+			end
 		end
-	end
 
-	local available = 0
-	for _, e in ipairs(sorted) do
-		available += e.value
-	end
+		table.sort(sorted, function(a, b)
+			return a.value > b.value
+		end)
 
-	if total < target then
-		if available < target then
-			dropValStatusLbl.Text = string.format("⚠️ Only %s available (need %dM)", formatVal(available), target)
+		if filter.type == "target" then
+			local ALLOWED_THRESHOLD = 3
+
+			for _, e in ipairs(sorted) do
+				local newTotal = total + e.value
+
+				if newTotal <= filter.value then
+					table.insert(queue, e)
+					total = newTotal
+				elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
+					table.insert(queue, e)
+					total = newTotal
+					break
+				end
+			end
 		else
-			dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s", formatVal(total))
+			for _, e in ipairs(sorted) do
+				if matchesFilter(e.value, filter) then
+					table.insert(queue, e)
+					total += e.value
+				end
+			end
 		end
+	end
+
+	rebuildQueue()
+
+	if #queue == 0 then
+		dropValStatusLbl.Text = "⚠️ No matching fruits"
 		return
 	end
 
-	dropValStatusLbl.Text = string.format("Dropping %d fruits · %s", #queue, formatVal(total))
+	if filter.type == "target" then
+		local available = 0
+
+		for _, e in ipairs(backpackFruits) do
+			if not e.favorite then
+				available += e.value
+			end
+		end
+
+		if total < filter.value then
+			if available < filter.value then
+				dropValStatusLbl.Text =
+					string.format("⚠️ Only %s available (need %dM)", formatVal(available), filter.value)
+			else
+				dropValStatusLbl.Text =
+					string.format("⚠️ Closest combination: %s", formatVal(total))
+			end
+			return
+		end
+	end
+
 	dropValBtn.Text = "⛔ Cancel"
 	dropValBtn.BackgroundColor3 = C.dangerDim
 	dropValBtn.TextColor3 = C.danger
@@ -713,13 +815,15 @@ dropValBtn.MouseButton1Click:Connect(function()
 
 		local function promoteFruit(id)
 			Networking.Backpack.PromoteFruit:Fire(id)
+
 			local startT = tick()
+
 			while tick() - startT < 3 do
 				task.wait(0.05)
+
 				if bp then
 					for _, item in ipairs(bp:GetChildren()) do
-						if
-							item:IsA("Tool")
+						if item:IsA("Tool")
 							and item:GetAttribute("Id") == id
 							and not item:GetAttribute("FruitProxy")
 						then
@@ -728,48 +832,76 @@ dropValBtn.MouseButton1Click:Connect(function()
 					end
 				end
 			end
+
 			return nil
 		end
 
-		for _, entry in ipairs(queue) do
-			if not droppingByVal then
+		while droppingByVal do
+			rebuildQueue()
+
+			if #queue == 0 then
 				break
 			end
-			dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
+
+			local entry = queue[1]
+
+			dropValStatusLbl.Text =
+				string.format("Dropping %d · %s", dropped + 1, formatVal(total))
+
 			local tool = promoteFruit(entry.id)
-			if not tool then
-				task.wait(0.3)
-			else
+
+			if tool then
 				local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+
 				if hum then
 					hum:EquipTool(tool)
 				end
+
 				task.wait(0.5)
+
 				Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
-				dropped = dropped + 1
-				batchCount = batchCount + 1
+
+				dropped += 1
+				batchCount += 1
+
 				removeFromList(entry.id)
+
 				task.wait(0.3)
+
 				if batchCount >= BATCH_SIZE then
 					dropValStatusLbl.Text = "Waiting for pickup..."
+
 					local waitStart = tick()
+
 					while droppingByVal and tick() - waitStart < 60 do
 						local di = Workspace:FindFirstChild("DroppedItems")
+
 						if di and #di:GetChildren() == 0 then
 							break
 						end
+
 						task.wait(1)
 					end
+
 					batchCount = 0
 				end
+			else
+				task.wait(0.3)
+			end
+
+			if filter.type == "target" then
+				break
 			end
 		end
 
 		droppingByVal = false
+
 		dropValBtn.Text = "🎯 Drop by Value"
 		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
 		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
-		dropValStatusLbl.Text = string.format("✓ Dropped %d fruits · %s", dropped, formatVal(total))
+
+		dropValStatusLbl.Text =
+			string.format("✓ Dropped %d fruits", dropped)
 	end)
 end)
 
