@@ -136,12 +136,16 @@ local function createInterface()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "AutoSprinklerPanel"
 	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 100
 	screenGui.Parent = playerGui
 
 	local root = createRoundedFrame(screenGui, "RootFrame", Color3.fromRGB(12, 14, 18), Color3.fromRGB(20, 20, 24), 0)
-	root.AnchorPoint = Vector2.new(0.5, 0.5)
-	root.Position = UDim2.new(0.5, 0, 0.52, 0)
-	root.Size = UDim2.new(0, 420, 0, 604)
+	root.AnchorPoint = Vector2.new(0, 0)
+	root.Position = UDim2.new(0.2, 0, 0.08, 0)
+	root.Size = UDim2.new(0, 450, 0, 660)
+	root.BackgroundTransparency = 0
+	root.BorderSizePixel = 1
+	root.BorderColor3 = Color3.fromRGB(58, 255, 102)
 
 	local bg = Instance.new("UIGradient")
 	bg.Color = ColorSequence.new({
@@ -151,8 +155,63 @@ local function createInterface()
 	bg.Rotation = 90
 	bg.Parent = root
 
+	local titleBar = createRoundedFrame(root, "TitleBar", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
+	titleBar.Size = UDim2.new(1, 0, 0, 48)
+	titleBar.Position = UDim2.new(0, 0, 0, 0)
+	titleBar.BorderSizePixel = 0
+
+	local titleLabel = createTextLabel(titleBar, "TitleLabel", "AUTO SPRINKLER CONTROL", UDim2.new(0.7, -16, 1, 0), Color3.fromRGB(186, 255, 151), Enum.TextXAlignment.Left)
+	titleLabel.Position = UDim2.new(0, 16, 0, 0)
+	titleLabel.TextSize = 16
+	titleLabel.Font = Enum.Font.RobotoBold
+
+	local minimizeButton = Instance.new("TextButton")
+	minimizeButton.Name = "MinimizeButton"
+	minimizeButton.Size = UDim2.new(0, 0, 0, 32)
+	minimizeButton.Size = UDim2.new(0, 32, 0, 32)
+	minimizeButton.Position = UDim2.new(0.76, 0, 0.12, 0)
+	minimizeButton.Text = "━"
+	minimizeButton.Font = Enum.Font.RobotoBold
+	minimizeButton.TextSize = 18
+	minimizeButton.TextColor3 = Color3.fromRGB(178, 255, 137)
+	minimizeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
+	minimizeButton.BorderSizePixel = 0
+	minimizeButton.Parent = titleBar
+	local minCorner = Instance.new("UICorner")
+	minCorner.CornerRadius = UDim.new(0, 0.18)
+	minCorner.Parent = minimizeButton
+
+	local closeButton = Instance.new("TextButton")
+	closeButton.Name = "CloseButton"
+	closeButton.Size = UDim2.new(0, 32, 0, 32)
+	closeButton.Position = UDim2.new(0.86, 0, 0.12, 0)
+	closeButton.Text = "✕"
+	closeButton.Font = Enum.Font.RobotoBold
+	closeButton.TextSize = 18
+	closeButton.TextColor3 = Color3.fromRGB(255, 100, 100)
+	closeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
+	closeButton.BorderSizePixel = 0
+	closeButton.Parent = titleBar
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 0.18)
+	closeCorner.Parent = closeButton
+
+	local bodyFrame = Instance.new("Frame")
+	bodyFrame.Name = "BodyFrame"
+	bodyFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+	bodyFrame.BackgroundTransparency = 0.05
+	bodyFrame.Position = UDim2.new(0, 0, 0, 48)
+	bodyFrame.Size = UDim2.new(1, 0, 1, -48)
+	bodyFrame.Parent = root
+
+	ui.root = root
+	ui.bodyFrame = bodyFrame
+	ui.minimized = false
+	ui.minimizeButton = minimizeButton
+	ui.closeButton = closeButton
+
 	local header = createTextLabel(
-		root,
+		bodyFrame,
 		"Header",
 		"AUTO SPRINKLER CONTROL",
 		UDim2.new(1, -32, 0, 44),
@@ -164,22 +223,22 @@ local function createInterface()
 	header.TextStrokeTransparency = 0.86
 
 	local subtitle = createTextLabel(
-		root,
+		bodyFrame,
 		"Subtitle",
 		"High-end garden placement utility",
 		UDim2.new(1, -32, 0, 20),
 		Color3.fromRGB(160, 160, 160),
 		Enum.TextXAlignment.Left
 	)
-	subtitle.Position = UDim2.new(0, 0, 0, 46)
+	subtitle.Position = UDim2.new(0, 0, 0, 52)
 	subtitle.TextSize = 12
 
 	local form = Instance.new("Frame")
 	form.Name = "Form"
 	form.BackgroundTransparency = 1
 	form.Size = UDim2.new(1, -32, 0, 334)
-	form.Position = UDim2.new(0, 16, 0, 76)
-	form.Parent = root
+	form.Position = UDim2.new(0, 16, 0, 84)
+	form.Parent = bodyFrame
 
 	local formLayout = Instance.new("UIListLayout")
 	formLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -348,9 +407,9 @@ local function createInterface()
 	ui.statusAction.Position = UDim2.new(0, 0, 0, 88)
 
 	local actionSection =
-		createRoundedFrame(root, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
-	actionSection.Size = UDim2.new(1, -32, 0, 74)
-	actionSection.Position = UDim2.new(0, 16, 0, 420)
+		createRoundedFrame(bodyFrame, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
+	actionSection.Size = UDim2.new(1, -32, 0, 84)
+	actionSection.Position = UDim2.new(0, 16, 0, 476)
 
 	local actionLayout = Instance.new("UIListLayout")
 	actionLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -372,9 +431,9 @@ local function createInterface()
 	ui.superButton.TextSize = 12
 
 	local logContainer =
-		createRoundedFrame(root, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
-	logContainer.Size = UDim2.new(1, -32, 0, 80)
-	logContainer.Position = UDim2.new(0, 16, 0, 504)
+		createRoundedFrame(bodyFrame, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
+	logContainer.Size = UDim2.new(1, -32, 0, 96)
+	logContainer.Position = UDim2.new(0, 16, 0, 572)
 
 	local logTitle = createTextLabel(
 		logContainer,
@@ -892,6 +951,68 @@ local function initializeUI()
 	ui.startButton.MouseButton1Click:Connect(startPressed)
 	ui.stopButton.MouseButton1Click:Connect(stopPressed)
 	ui.superButton.MouseButton1Click:Connect(superWaterPressed)
+
+	local titleBar = ui.root and ui.root:FindFirstChild("TitleBar")
+	local draggingWindow = false
+	local dragStart
+	local frameStart
+
+	local function onDragStart(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			draggingWindow = true
+			dragStart = input.Position
+			frameStart = ui.root.Position
+		end
+	end
+
+	local function onDragMove(input)
+		if not draggingWindow then
+			return
+		end
+		local delta = input.Position - dragStart
+		ui.root.Position = UDim2.new(
+			math.clamp(frameStart.X.Scale + delta.X / workspace.CurrentCamera.ViewportSize.X, 0, 1 - ui.root.Size.X.Scale),
+			frameStart.X.Offset + delta.X,
+			math.clamp(frameStart.Y.Scale + delta.Y / workspace.CurrentCamera.ViewportSize.Y, 0, 1 - ui.root.Size.Y.Scale),
+			frameStart.Y.Offset + delta.Y
+		)
+	end
+
+	local function onDragEnd(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			draggingWindow = false
+		end
+	end
+
+	if titleBar then
+		titleBar.InputBegan:Connect(onDragStart)
+		titleBar.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement then
+				onDragMove(input)
+			end
+		end)
+		UserInputService.InputEnded:Connect(onDragEnd)
+	end
+
+	if ui.minimizeButton then
+		ui.minimizeButton.MouseButton1Click:Connect(function()
+			ui.minimized = not ui.minimized
+			ui.bodyFrame.Visible = not ui.minimized
+			if ui.minimized then
+				ui.minimizeButton.Text = "+"
+				ui.root.Size = UDim2.new(ui.root.Size.X.Scale, ui.root.Size.X.Offset, 0, 48)
+			else
+				ui.minimizeButton.Text = "━"
+				ui.root.Size = UDim2.new(0, 450, 0, 660)
+			end
+		end)
+	end
+
+	if ui.closeButton then
+		ui.closeButton.MouseButton1Click:Connect(function()
+			ui.root:Destroy()
+		end)
+	end
 
 	local slider = ui.radiusSlider
 	local sliderHit = ui.radiusHit
