@@ -26,6 +26,9 @@ end
 
 local function findTargetPlayer(targetQuery)
 	if not targetQuery or targetQuery == "" then return nil end
+	-- Trim any accidental spaces from the input
+	targetQuery = targetQuery:match("^%s*(.-)%s*$")
+	
 	for _, p in ipairs(Players:GetPlayers()) do
 		if string.lower(p.Name) == string.lower(targetQuery) or tostring(p.UserId) == targetQuery then
 			return p
@@ -38,7 +41,8 @@ local function findPlotForUser(userId)
 	local gardens = workspace:FindFirstChild("Gardens") or workspace:FindFirstChild("Plots")
 	if not gardens then return nil end
 	for _, plot in ipairs(gardens:GetChildren()) do
-		if tostring(plot:GetAttribute("OwnerUserId")) == tostring(userId) then
+		local owner = plot:GetAttribute("OwnerUserId")
+		if owner and tostring(owner) == tostring(userId) then
 			return plot
 		end
 	end
@@ -71,7 +75,9 @@ local function raycastToGround(position)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { getCharacter() }
-	local result = workspace:Raycast(position + Vector3.new(0, 15, 0), Vector3.new(0, -100, 0), params)
+	local origin = position + Vector3.new(0, 15, 0)
+	local direction = Vector3.new(0, -100, 0)
+	local result = workspace:Raycast(origin, direction, params)
 	return result and result.Position or position
 end
 
@@ -82,8 +88,19 @@ local function equipTool(toolName)
 	
 	if tool.Parent ~= char then
 		local humanoid = char:FindFirstChild("Humanoid")
-		if humanoid then humanoid:EquipTool(tool) end
-		task.wait(0.2)
+		if humanoid then 
+			humanoid:EquipTool(tool) 
+		end
+		
+		-- FIX: Strict yield until the tool is physically parented to the character.
+		-- Without this, the server distance-check fails and clamps placement to your feet.
+		local deadline = tick() + 2
+		repeat
+			task.wait()
+		until tool.Parent == char or tick() > deadline
+		
+		-- Give the server one extra moment to sync the tool's physical location
+		task.wait(0.1)
 	end
 	return tool
 end
@@ -111,7 +128,7 @@ local function runPlacementCycle(targetQuery)
 	local centerPosition = plant and getPlantPosition(plant)
 
 	if not centerPosition then
-		warn("Could not find player, plot, or plant.")
+		warn("[AutoSprinkler] Could not find player, plot, or plant.")
 		isRunning = false
 		return
 	end
@@ -138,7 +155,7 @@ local function waterPlant(targetQuery)
 	local centerPosition = plant and getPlantPosition(plant)
 
 	if not centerPosition then
-		warn("Could not find player, plot, or plant.")
+		warn("[AutoSprinkler] Could not find player, plot, or plant.")
 		return
 	end
 
