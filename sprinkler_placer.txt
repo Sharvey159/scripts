@@ -31,6 +31,18 @@ local currentTask
 
 local ui = {}
 
+-- Forward declarations: these are referenced inside initializeUI() (defined
+-- below) but the actual implementations live further down in the file.
+-- Without this, Lua treats the names inside initializeUI as undeclared
+-- globals (nil) since the locals don't exist yet at that point in the source.
+local refreshSelectionButtons
+local setMode
+local updateDelayLabel
+local updateSliderFill
+local startPressed
+local stopPressed
+local superWaterPressed
+
 local function createWindow()
     local existing = playerGui:FindFirstChild("AutoSprinklerPanel")
     if existing then
@@ -1227,7 +1239,7 @@ local function useSuperWateringCanAt(position)
 	return true
 end
 
-local function updateSliderFill(value)
+function updateSliderFill(value)
 	local slice = (value - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)
 	slice = clamp(slice, 0, 1)
 	if ui.radiusFill then
@@ -1238,7 +1250,7 @@ local function updateSliderFill(value)
 	end
 end
 
-local function refreshSelectionButtons()
+function refreshSelectionButtons()
 	for key, btn in pairs(ui.typeButtons) do
 		if ui.selectedType == key then
 			btn.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
@@ -1264,13 +1276,13 @@ local function refreshSelectionButtons()
 	end
 end
 
-local function setMode(newMode)
+function setMode(newMode)
 	ui.mode = newMode
 	updateStatusField(ui.statusAction, "Mode set to " .. newMode)
 	refreshSelectionButtons()
 end
 
-local function updateDelayLabel(value)
+function updateDelayLabel(value)
 	if ui.delayInput then
 		ui.delayInput.Text = formatTime(value)
 	end
@@ -1391,7 +1403,7 @@ local function runPlacementCycle()
 	isRunning = false
 end
 
-local function superWaterPressed()
+function superWaterPressed()
 	if isRunning then
 		logStatus("Cannot use Super Watering Can while placement is running.")
 		return
@@ -1456,7 +1468,7 @@ local function superWaterPressed()
 	end
 end
 
-local function startPressed()
+function startPressed()
 	if isRunning then
 		return
 	end
@@ -1465,7 +1477,7 @@ local function startPressed()
 	currentTask = task.spawn(runPlacementCycle)
 end
 
-local function stopPressed()
+function stopPressed()
 	if not isRunning then
 		return
 	end
