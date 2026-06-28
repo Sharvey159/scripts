@@ -140,9 +140,9 @@ local function createInterface()
 	screenGui.Parent = playerGui
 
 	local root = createRoundedFrame(screenGui, "RootFrame", Color3.fromRGB(12, 14, 18), Color3.fromRGB(20, 20, 24), 0)
-	root.AnchorPoint = Vector2.new(0, 0)
-	root.Position = UDim2.new(0.2, 0, 0.08, 0)
-	root.Size = UDim2.new(0, 450, 0, 660)
+	root.AnchorPoint = Vector2.new(0.5, 0)
+	root.Position = UDim2.new(0.5, 0, 0.06, 0)
+	root.Size = UDim2.new(0, 720, 0, 360)
 	root.BackgroundTransparency = 0
 	root.BorderSizePixel = 1
 	root.BorderColor3 = Color3.fromRGB(58, 255, 102)
@@ -150,7 +150,7 @@ local function createInterface()
 	local bg = Instance.new("UIGradient")
 	bg.Color = ColorSequence.new({
 		ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 16, 20)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 20, 26)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(22, 24, 28)),
 	})
 	bg.Rotation = 90
 	bg.Parent = root
@@ -160,18 +160,24 @@ local function createInterface()
 	titleBar.Position = UDim2.new(0, 0, 0, 0)
 	titleBar.BorderSizePixel = 0
 
-	local titleLabel = createTextLabel(titleBar, "TitleLabel", "AUTO SPRINKLER CONTROL", UDim2.new(0.7, -16, 1, 0), Color3.fromRGB(186, 255, 151), Enum.TextXAlignment.Left)
+	local titleLabel = createTextLabel(
+		titleBar,
+		"TitleLabel",
+		"AUTO SPRINKLER CONTROL",
+		UDim2.new(0.7, -16, 1, 0),
+		Color3.fromRGB(186, 255, 151),
+		Enum.TextXAlignment.Left
+	)
 	titleLabel.Position = UDim2.new(0, 16, 0, 0)
 	titleLabel.TextSize = 16
-	titleLabel.Font = Enum.Font.RobotoBold
+	titleLabel.Font = Enum.Font.GothamSemibold
 
 	local minimizeButton = Instance.new("TextButton")
 	minimizeButton.Name = "MinimizeButton"
-	minimizeButton.Size = UDim2.new(0, 0, 0, 32)
 	minimizeButton.Size = UDim2.new(0, 32, 0, 32)
-	minimizeButton.Position = UDim2.new(0.76, 0, 0.12, 0)
+	minimizeButton.Position = UDim2.new(0.78, 0, 0.08, 0)
 	minimizeButton.Text = "━"
-	minimizeButton.Font = Enum.Font.RobotoBold
+	minimizeButton.Font = Enum.Font.GothamSemibold
 	minimizeButton.TextSize = 18
 	minimizeButton.TextColor3 = Color3.fromRGB(178, 255, 137)
 	minimizeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
@@ -184,9 +190,9 @@ local function createInterface()
 	local closeButton = Instance.new("TextButton")
 	closeButton.Name = "CloseButton"
 	closeButton.Size = UDim2.new(0, 32, 0, 32)
-	closeButton.Position = UDim2.new(0.86, 0, 0.12, 0)
+	closeButton.Position = UDim2.new(0.88, 0, 0.08, 0)
 	closeButton.Text = "✕"
-	closeButton.Font = Enum.Font.RobotoBold
+	closeButton.Font = Enum.Font.GothamSemibold
 	closeButton.TextSize = 18
 	closeButton.TextColor3 = Color3.fromRGB(255, 100, 100)
 	closeButton.BackgroundColor3 = Color3.fromRGB(26, 30, 36)
@@ -210,47 +216,58 @@ local function createInterface()
 	ui.minimizeButton = minimizeButton
 	ui.closeButton = closeButton
 
-	local header = createTextLabel(
-		bodyFrame,
-		"Header",
-		"AUTO SPRINKLER CONTROL",
-		UDim2.new(1, -32, 0, 44),
+	local leftPanel =
+		createRoundedFrame(bodyFrame, "LeftPanel", Color3.fromRGB(15, 18, 24), Color3.fromRGB(60, 255, 150), 1)
+	leftPanel.Size = UDim2.new(0.58, 0, 1, 0)
+	leftPanel.Position = UDim2.new(0, 0, 0, 0)
+	leftPanel.BackgroundTransparency = 0.05
+	leftPanel.Parent = bodyFrame
+
+	local rightPanel =
+		createRoundedFrame(bodyFrame, "RightPanel", Color3.fromRGB(15, 18, 24), Color3.fromRGB(60, 255, 150), 1)
+	rightPanel.Size = UDim2.new(0.42, -12, 1, 0)
+	rightPanel.Position = UDim2.new(0.58, 12, 0, 0)
+	rightPanel.BackgroundTransparency = 0.05
+	rightPanel.Parent = bodyFrame
+
+	local leftLayout = Instance.new("UIListLayout")
+	leftLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	leftLayout.Padding = UDim.new(0, 12)
+	leftLayout.Parent = leftPanel
+
+	local rightLayout = Instance.new("UIListLayout")
+	rightLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	rightLayout.Padding = UDim.new(0, 12)
+	rightLayout.Parent = rightPanel
+
+	local leftHeader = createTextLabel(
+		leftPanel,
+		"LeftHeader",
+		"Controls",
+		UDim2.new(1, -24, 0, 28),
 		Color3.fromRGB(186, 255, 151),
 		Enum.TextXAlignment.Left
 	)
-	header.Position = UDim2.new(0, 0, 0, 16)
-	header.TextSize = 20
-	header.TextStrokeTransparency = 0.86
+	leftHeader.Position = UDim2.new(0, 12, 0, 12)
+	leftHeader.TextSize = 16
 
-	local subtitle = createTextLabel(
-		bodyFrame,
-		"Subtitle",
-		"High-end garden placement utility",
-		UDim2.new(1, -32, 0, 20),
-		Color3.fromRGB(160, 160, 160),
+	local rightHeader = createTextLabel(
+		rightPanel,
+		"RightHeader",
+		"Status",
+		UDim2.new(1, -24, 0, 28),
+		Color3.fromRGB(186, 255, 151),
 		Enum.TextXAlignment.Left
 	)
-	subtitle.Position = UDim2.new(0, 0, 0, 52)
-	subtitle.TextSize = 12
+	rightHeader.Position = UDim2.new(0, 12, 0, 12)
+	rightHeader.TextSize = 16
 
-	local form = Instance.new("Frame")
-	form.Name = "Form"
-	form.BackgroundTransparency = 1
-	form.Size = UDim2.new(1, -32, 0, 334)
-	form.Position = UDim2.new(0, 16, 0, 84)
-	form.Parent = bodyFrame
-
-	local formLayout = Instance.new("UIListLayout")
-	formLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	formLayout.Padding = UDim.new(0, 12)
-	formLayout.Parent = form
-
-	local function section(title)
+	local function section(parent, title, height)
 		local container = Instance.new("Frame")
 		container.Name = title:gsub("%s+", "")
 		container.BackgroundTransparency = 1
-		container.Size = UDim2.new(1, 0, 0, 82)
-		container.Parent = form
+		container.Size = UDim2.new(1, -24, 0, height)
+		container.Parent = parent
 
 		local label = createTextLabel(
 			container,
@@ -266,21 +283,20 @@ local function createInterface()
 		return container
 	end
 
-	local targetSection = section("Target Player")
+	local targetSection = section(leftPanel, "Target Player", 92)
 	ui.playerInput = createInputLabel(targetSection, "PlayerInput", "Enter username or user ID")
-	ui.playerInput.Position = UDim2.new(0, 0, 0, 28)
+	ui.playerInput.Position = UDim2.new(0, 0, 0, 36)
 
-	local selectionSection = section("Sprinkler Selection")
-	selectionSection.Size = UDim2.new(1, 0, 0, 128)
+	local selectionSection = section(leftPanel, "Sprinkler Selection", 152)
 	local buttonGrid = Instance.new("Frame")
 	buttonGrid.Name = "ButtonGrid"
 	buttonGrid.BackgroundTransparency = 1
-	buttonGrid.Size = UDim2.new(1, 0, 0, 80)
-	buttonGrid.Position = UDim2.new(0, 0, 0, 28)
+	buttonGrid.Size = UDim2.new(1, 0, 0, 88)
+	buttonGrid.Position = UDim2.new(0, 0, 0, 32)
 	buttonGrid.Parent = selectionSection
 
 	local gridLayout = Instance.new("UIGridLayout")
-	gridLayout.CellSize = UDim2.new(0.49, 0, 0, 36)
+	gridLayout.CellSize = UDim2.new(0.48, 0, 0, 36)
 	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
 	gridLayout.FillDirection = Enum.FillDirection.Horizontal
 	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -288,7 +304,7 @@ local function createInterface()
 	gridLayout.Parent = buttonGrid
 
 	ui.typeButtons = {}
-	for key, value in pairs(SPRINKLER_TYPES) do
+	for key in pairs(SPRINKLER_TYPES) do
 		local btn = createButton(buttonGrid, key .. "Button", key)
 		btn.TextSize = 13
 		btn.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
@@ -298,8 +314,8 @@ local function createInterface()
 	local modeContainer = Instance.new("Frame")
 	modeContainer.Name = "ModeContainer"
 	modeContainer.BackgroundTransparency = 1
-	modeContainer.Size = UDim2.new(1, 0, 0, 32)
-	modeContainer.Position = UDim2.new(0, 0, 0, 100)
+	modeContainer.Size = UDim2.new(1, 0, 0, 36)
+	modeContainer.Position = UDim2.new(0, 0, 0, 124)
 	modeContainer.Parent = selectionSection
 
 	local modeLabel = createTextLabel(
@@ -323,117 +339,143 @@ local function createInterface()
 	ui.modeSequence.Position = UDim2.new(0.58, 0, 0, 0)
 	ui.modeSequence.TextSize = 12
 
-	local layoutSection = section("Placement Settings")
-	layoutSection.Size = UDim2.new(1, 0, 0, 144)
+	local layoutSection = section(leftPanel, "Placement Settings", 166)
 
 	local radiusLabel = createTextLabel(
 		layoutSection,
 		"RadiusLabel",
 		"Radius: 3 studs",
-		UDim2.new(1, 0, 0, 16),
+		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(220, 220, 220),
 		Enum.TextXAlignment.Left
 	)
-	radiusLabel.Position = UDim2.new(0, 0, 0, 28)
+	radiusLabel.Position = UDim2.new(0, 0, 0, 30)
 
 	ui.radiusSlider, ui.radiusFill, ui.radiusHit = createSlider(layoutSection)
-	ui.radiusSlider.Position = UDim2.new(0, 0, 0, 50)
+	ui.radiusSlider.Position = UDim2.new(0, 0, 0, 56)
 
 	local delayLabel = createTextLabel(
 		layoutSection,
 		"DelayLabel",
 		"Delay: 1.0 sec",
-		UDim2.new(1, 0, 0, 16),
+		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(220, 220, 220),
 		Enum.TextXAlignment.Left
 	)
-	delayLabel.Position = UDim2.new(0, 0, 0, 92)
+	delayLabel.Position = UDim2.new(0, 0, 0, 98)
 
 	ui.delayInput = createInputLabel(layoutSection, "DelayInput", "Enter delay in seconds")
-	ui.delayInput.Position = UDim2.new(0, 0, 0, 114)
+	ui.delayInput.Position = UDim2.new(0, 0, 0, 120)
 	ui.delayInput.Text = tostring(DEFAULT_DELAY)
 
-	local indicatorSection = section("Status Indicators")
-	indicatorSection.Size = UDim2.new(1, 0, 0, 132)
+	local statusContainer =
+		createRoundedFrame(rightPanel, "StatusContainer", Color3.fromRGB(18, 20, 24), Color3.fromRGB(60, 255, 144), 1)
+	statusContainer.Size = UDim2.new(1, -24, 0.48, 0)
+	statusContainer.Position = UDim2.new(0, 12, 0, 48)
+	statusContainer.Parent = rightPanel
+
+	local statusTitle = createTextLabel(
+		statusContainer,
+		"StatusTitle",
+		"Garden Status",
+		UDim2.new(1, 0, 0, 20),
+		Color3.fromRGB(178, 255, 137),
+		Enum.TextXAlignment.Left
+	)
+	statusTitle.Position = UDim2.new(0, 0, 0, 8)
+	statusTitle.TextSize = 14
 
 	ui.statusDetected = createTextLabel(
-		indicatorSection,
+		statusContainer,
 		"DetectedPlayer",
 		"Detected: —",
 		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(200, 200, 200),
 		Enum.TextXAlignment.Left
 	)
-	ui.statusDetected.Position = UDim2.new(0, 0, 0, 0)
+	ui.statusDetected.Position = UDim2.new(0, 0, 0, 36)
 
 	ui.statusOwner = createTextLabel(
-		indicatorSection,
+		statusContainer,
 		"OwnerId",
 		"OwnerUserId: —",
 		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(200, 200, 200),
 		Enum.TextXAlignment.Left
 	)
-	ui.statusOwner.Position = UDim2.new(0, 0, 0, 22)
+	ui.statusOwner.Position = UDim2.new(0, 0, 0, 58)
 
 	ui.statusPlot = createTextLabel(
-		indicatorSection,
+		statusContainer,
 		"PlotName",
 		"Plot Name: —",
 		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(200, 200, 200),
 		Enum.TextXAlignment.Left
 	)
-	ui.statusPlot.Position = UDim2.new(0, 0, 0, 44)
+	ui.statusPlot.Position = UDim2.new(0, 0, 0, 80)
 
 	ui.statusPlants = createTextLabel(
-		indicatorSection,
+		statusContainer,
 		"PlantCount",
 		"Plant Count: —",
 		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(200, 200, 200),
 		Enum.TextXAlignment.Left
 	)
-	ui.statusPlants.Position = UDim2.new(0, 0, 0, 66)
+	ui.statusPlants.Position = UDim2.new(0, 0, 0, 102)
 
 	ui.statusAction = createTextLabel(
-		indicatorSection,
+		statusContainer,
 		"CurrentAction",
 		"Action: Idle",
 		UDim2.new(1, 0, 0, 18),
 		Color3.fromRGB(178, 255, 137),
 		Enum.TextXAlignment.Left
 	)
-	ui.statusAction.Position = UDim2.new(0, 0, 0, 88)
+	ui.statusAction.Position = UDim2.new(0, 0, 0, 124)
 
 	local actionSection =
-		createRoundedFrame(bodyFrame, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
-	actionSection.Size = UDim2.new(1, -32, 0, 84)
-	actionSection.Position = UDim2.new(0, 16, 0, 476)
+		createRoundedFrame(leftPanel, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
+	actionSection.Size = UDim2.new(1, -24, 0, 116)
+	actionSection.Parent = leftPanel
 
-	local actionLayout = Instance.new("UIListLayout")
-	actionLayout.FillDirection = Enum.FillDirection.Horizontal
-	actionLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	actionLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	actionLayout.Padding = UDim.new(0, 16)
-	actionLayout.Parent = actionSection
+	local actionTitle = createTextLabel(
+		actionSection,
+		"ActionTitle",
+		"Actions",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(178, 255, 137),
+		Enum.TextXAlignment.Left
+	)
+	actionTitle.Position = UDim2.new(0, 0, 0, 8)
+	actionTitle.TextSize = 14
+
+	local actionGrid = Instance.new("UIGridLayout")
+	actionGrid.CellSize = UDim2.new(0.31, 0, 0, 42)
+	actionGrid.CellPadding = UDim2.new(0, 12, 0, 12)
+	actionGrid.FillDirection = Enum.FillDirection.Horizontal
+	actionGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	actionGrid.VerticalAlignment = Enum.VerticalAlignment.Top
+	actionGrid.Parent = actionSection
 
 	ui.startButton = createButton(actionSection, "StartButton", "START")
-	ui.startButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.startButton.Size = UDim2.new(0.31, 0, 0, 42)
 	ui.startButton.TextSize = 14
 
 	ui.stopButton = createButton(actionSection, "StopButton", "STOP")
-	ui.stopButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.stopButton.Size = UDim2.new(0.31, 0, 0, 42)
 	ui.stopButton.TextSize = 14
 
 	ui.superButton = createButton(actionSection, "SuperButton", "SUPER WATER")
-	ui.superButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.superButton.Size = UDim2.new(0.31, 0, 0, 42)
 	ui.superButton.TextSize = 12
 
 	local logContainer =
-		createRoundedFrame(bodyFrame, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
-	logContainer.Size = UDim2.new(1, -32, 0, 96)
-	logContainer.Position = UDim2.new(0, 16, 0, 572)
+		createRoundedFrame(rightPanel, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
+	logContainer.Size = UDim2.new(1, -24, 0.5, -12)
+	logContainer.Position = UDim2.new(0, 12, 0.52, 0)
+	logContainer.Parent = rightPanel
 
 	local logTitle = createTextLabel(
 		logContainer,
@@ -443,15 +485,15 @@ local function createInterface()
 		Color3.fromRGB(178, 255, 137),
 		Enum.TextXAlignment.Left
 	)
-	logTitle.Position = UDim2.new(0, 0, 0, 6)
+	logTitle.Position = UDim2.new(0, 0, 0, 8)
 	logTitle.TextSize = 13
 
 	local logBox = Instance.new("ScrollingFrame")
 	logBox.Name = "LogBox"
 	logBox.BackgroundTransparency = 1
 	logBox.BorderSizePixel = 0
-	logBox.Position = UDim2.new(0, 0, 0, 28)
-	logBox.Size = UDim2.new(1, 0, 1, -28)
+	logBox.Position = UDim2.new(0, 0, 0, 32)
+	logBox.Size = UDim2.new(1, 0, 1, -32)
 	logBox.ScrollBarImageColor3 = Color3.fromRGB(110, 255, 142)
 	logBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	logBox.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -698,9 +740,7 @@ local function refreshSelectionButtons()
 		end
 	end
 
-	if ui.modeSingle then
-		ui.modeSingle.BackgroundColor3 = ui.modeSequence.BackgroundColor3
-		ui.modeSequence.BackgroundColor3 = ui.modeSequence.BackgroundColor3
+	if ui.modeSingle and ui.modeSequence then
 		if ui.mode == "Single" then
 			ui.modeSingle.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
 			ui.modeSingle.TextColor3 = Color3.fromRGB(233, 255, 190)
@@ -971,9 +1011,17 @@ local function initializeUI()
 		end
 		local delta = input.Position - dragStart
 		ui.root.Position = UDim2.new(
-			math.clamp(frameStart.X.Scale + delta.X / workspace.CurrentCamera.ViewportSize.X, 0, 1 - ui.root.Size.X.Scale),
+			math.clamp(
+				frameStart.X.Scale + delta.X / workspace.CurrentCamera.ViewportSize.X,
+				0,
+				1 - ui.root.Size.X.Scale
+			),
 			frameStart.X.Offset + delta.X,
-			math.clamp(frameStart.Y.Scale + delta.Y / workspace.CurrentCamera.ViewportSize.Y, 0, 1 - ui.root.Size.Y.Scale),
+			math.clamp(
+				frameStart.Y.Scale + delta.Y / workspace.CurrentCamera.ViewportSize.Y,
+				0,
+				1 - ui.root.Size.Y.Scale
+			),
 			frameStart.Y.Offset + delta.Y
 		)
 	end
