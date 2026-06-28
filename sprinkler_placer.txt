@@ -1,22 +1,476 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local Networking = require(ReplicatedStorage.SharedModules.Networking)
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
-local hrp = character:WaitForChild("HumanoidRootPart")
 local backpack = player:WaitForChild("Backpack")
 
-local TARGET_NAMES = { "000022226666", "SharvxPlayz" }
-local SPRINKLERS = { "Common Sprinkler", "Uncommon Sprinkler", "Rare Sprinkler", "Legendary Sprinkler" }
-local GAP = 3 -- studs from center
-local DELAY = 1 -- seconds between placements
+local SPRINKLER_TYPES = {
+	Common = "Common Sprinkler",
+	Uncommon = "Uncommon Sprinkler",
+	Rare = "Rare Sprinkler",
+	Legendary = "Legendary Sprinkler",
+}
 
-local function findTargetPlayer()
+local WATERING_CAN_NAME = "Super Watering Can"
+local DEFAULT_RADIUS = 3
+local DEFAULT_DELAY = 1
+local MIN_RADIUS = 1
+local MAX_RADIUS = 10
+local MIN_DELAY = 0.2
+local MAX_DELAY = 5
+
+local isRunning = false
+local cancelRequested = false
+local currentTask
+
+local ui = {}
+
+local function createRoundedFrame(parent, name, bgColor, borderColor, borderSize)
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.BackgroundColor3 = bgColor
+	frame.BorderSizePixel = borderSize or 0
+	frame.BorderColor3 = borderColor or Color3.new(0, 0, 0)
+	frame.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 0.12)
+	corner.Parent = frame
+	return frame
+end
+
+local function createTextLabel(parent, name, text, size, color, alignment)
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.BackgroundTransparency = 1
+	label.Size = size
+	label.Font = Enum.Font.Roboto
+	label.Text = text
+	label.TextColor3 = color or Color3.fromRGB(220, 220, 220)
+	label.TextSize = 14
+	label.TextXAlignment = alignment or Enum.TextXAlignment.Left
+	label.TextYAlignment = Enum.TextYAlignment.Center
+	label.Parent = parent
+	return label
+end
+
+local function createButton(parent, name, text)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.AutoButtonColor = false
+	button.BackgroundColor3 = Color3.fromRGB(25, 28, 32)
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.RobotoBold
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(178, 255, 137)
+	button.TextSize = 14
+	button.Size = UDim2.new(1, 0, 0, 32)
+	button.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 0.14)
+	corner.Parent = button
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(58, 255, 102)
+	stroke.Transparency = 0.8
+	stroke.Parent = button
+	return button
+end
+
+local function createInputLabel(parent, name, placeholder)
+	local box = Instance.new("TextBox")
+	box.Name = name
+	box.BackgroundColor3 = Color3.fromRGB(18, 20, 24)
+	box.BorderSizePixel = 0
+	box.ClearTextOnFocus = false
+	box.Font = Enum.Font.RobotoMono
+	box.PlaceholderText = placeholder or ""
+	box.Text = ""
+	box.TextColor3 = Color3.fromRGB(232, 232, 232)
+	box.TextSize = 14
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.Size = UDim2.new(1, 0, 0, 32)
+	box.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 0.14)
+	corner.Parent = box
+	return box
+end
+
+local function createSlider(parent)
+	local sliderFrame =
+		createRoundedFrame(parent, "RadiusSlider", Color3.fromRGB(20, 22, 28), Color3.fromRGB(60, 255, 130), 1)
+	sliderFrame.Size = UDim2.new(1, 0, 0, 32)
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = Color3.fromRGB(58, 255, 102)
+	fill.Size = UDim2.new(0.3, 0, 1, 0)
+	fill.Parent = sliderFrame
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 0.14)
+	corner.Parent = fill
+
+	local hitArea = Instance.new("TextButton")
+	hitArea.Name = "HitArea"
+	hitArea.BackgroundTransparency = 1
+	hitArea.Size = UDim2.new(1, 1, 1, 0)
+	hitArea.AutoButtonColor = false
+	hitArea.Text = ""
+	hitArea.Parent = sliderFrame
+
+	return sliderFrame, fill, hitArea
+end
+
+local function createInterface()
+	local existingGui = playerGui:FindFirstChild("AutoSprinklerPanel")
+	if existingGui then
+		existingGui:Destroy()
+	end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "AutoSprinklerPanel"
+	screenGui.ResetOnSpawn = false
+	screenGui.Parent = playerGui
+
+	local root = createRoundedFrame(screenGui, "RootFrame", Color3.fromRGB(12, 14, 18), Color3.fromRGB(20, 20, 24), 0)
+	root.AnchorPoint = Vector2.new(0.5, 0.5)
+	root.Position = UDim2.new(0.5, 0, 0.52, 0)
+	root.Size = UDim2.new(0, 420, 0, 604)
+
+	local bg = Instance.new("UIGradient")
+	bg.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 16, 20)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 20, 26)),
+	})
+	bg.Rotation = 90
+	bg.Parent = root
+
+	local header = createTextLabel(
+		root,
+		"Header",
+		"AUTO SPRINKLER CONTROL",
+		UDim2.new(1, -32, 0, 44),
+		Color3.fromRGB(186, 255, 151),
+		Enum.TextXAlignment.Left
+	)
+	header.Position = UDim2.new(0, 0, 0, 16)
+	header.TextSize = 20
+	header.TextStrokeTransparency = 0.86
+
+	local subtitle = createTextLabel(
+		root,
+		"Subtitle",
+		"High-end garden placement utility",
+		UDim2.new(1, -32, 0, 20),
+		Color3.fromRGB(160, 160, 160),
+		Enum.TextXAlignment.Left
+	)
+	subtitle.Position = UDim2.new(0, 0, 0, 46)
+	subtitle.TextSize = 12
+
+	local form = Instance.new("Frame")
+	form.Name = "Form"
+	form.BackgroundTransparency = 1
+	form.Size = UDim2.new(1, -32, 0, 334)
+	form.Position = UDim2.new(0, 16, 0, 76)
+	form.Parent = root
+
+	local formLayout = Instance.new("UIListLayout")
+	formLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	formLayout.Padding = UDim.new(0, 12)
+	formLayout.Parent = form
+
+	local function section(title)
+		local container = Instance.new("Frame")
+		container.Name = title:gsub("%s+", "")
+		container.BackgroundTransparency = 1
+		container.Size = UDim2.new(1, 0, 0, 82)
+		container.Parent = form
+
+		local label = createTextLabel(
+			container,
+			title .. "Label",
+			title,
+			UDim2.new(1, 0, 0, 18),
+			Color3.fromRGB(178, 255, 137),
+			Enum.TextXAlignment.Left
+		)
+		label.Position = UDim2.new(0, 0, 0, 0)
+		label.TextSize = 13
+
+		return container
+	end
+
+	local targetSection = section("Target Player")
+	ui.playerInput = createInputLabel(targetSection, "PlayerInput", "Enter username or user ID")
+	ui.playerInput.Position = UDim2.new(0, 0, 0, 28)
+
+	local selectionSection = section("Sprinkler Selection")
+	selectionSection.Size = UDim2.new(1, 0, 0, 128)
+	local buttonGrid = Instance.new("Frame")
+	buttonGrid.Name = "ButtonGrid"
+	buttonGrid.BackgroundTransparency = 1
+	buttonGrid.Size = UDim2.new(1, 0, 0, 80)
+	buttonGrid.Position = UDim2.new(0, 0, 0, 28)
+	buttonGrid.Parent = selectionSection
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.CellSize = UDim2.new(0.49, 0, 0, 36)
+	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+	gridLayout.FillDirection = Enum.FillDirection.Horizontal
+	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	gridLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+	gridLayout.Parent = buttonGrid
+
+	ui.typeButtons = {}
+	for key, value in pairs(SPRINKLER_TYPES) do
+		local btn = createButton(buttonGrid, key .. "Button", key)
+		btn.TextSize = 13
+		btn.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
+		ui.typeButtons[key] = btn
+	end
+
+	local modeContainer = Instance.new("Frame")
+	modeContainer.Name = "ModeContainer"
+	modeContainer.BackgroundTransparency = 1
+	modeContainer.Size = UDim2.new(1, 0, 0, 32)
+	modeContainer.Position = UDim2.new(0, 0, 0, 100)
+	modeContainer.Parent = selectionSection
+
+	local modeLabel = createTextLabel(
+		modeContainer,
+		"ModeLabel",
+		"Mode",
+		UDim2.new(0.18, 0, 1, 0),
+		Color3.fromRGB(178, 255, 137),
+		Enum.TextXAlignment.Left
+	)
+	modeLabel.Position = UDim2.new(0, 0, 0, 0)
+	modeLabel.TextSize = 13
+
+	ui.modeSingle = createButton(modeContainer, "SingleMode", "Single")
+	ui.modeSingle.Size = UDim2.new(0.38, -6, 1, 0)
+	ui.modeSingle.Position = UDim2.new(0.22, 0, 0, 0)
+	ui.modeSingle.TextSize = 12
+
+	ui.modeSequence = createButton(modeContainer, "SequenceMode", "Sequence")
+	ui.modeSequence.Size = UDim2.new(0.38, -6, 1, 0)
+	ui.modeSequence.Position = UDim2.new(0.58, 0, 0, 0)
+	ui.modeSequence.TextSize = 12
+
+	local layoutSection = section("Placement Settings")
+	layoutSection.Size = UDim2.new(1, 0, 0, 144)
+
+	local radiusLabel = createTextLabel(
+		layoutSection,
+		"RadiusLabel",
+		"Radius: 3 studs",
+		UDim2.new(1, 0, 0, 16),
+		Color3.fromRGB(220, 220, 220),
+		Enum.TextXAlignment.Left
+	)
+	radiusLabel.Position = UDim2.new(0, 0, 0, 28)
+
+	ui.radiusSlider, ui.radiusFill, ui.radiusHit = createSlider(layoutSection)
+	ui.radiusSlider.Position = UDim2.new(0, 0, 0, 50)
+
+	local delayLabel = createTextLabel(
+		layoutSection,
+		"DelayLabel",
+		"Delay: 1.0 sec",
+		UDim2.new(1, 0, 0, 16),
+		Color3.fromRGB(220, 220, 220),
+		Enum.TextXAlignment.Left
+	)
+	delayLabel.Position = UDim2.new(0, 0, 0, 92)
+
+	ui.delayInput = createInputLabel(layoutSection, "DelayInput", "Enter delay in seconds")
+	ui.delayInput.Position = UDim2.new(0, 0, 0, 114)
+	ui.delayInput.Text = tostring(DEFAULT_DELAY)
+
+	local indicatorSection = section("Status Indicators")
+	indicatorSection.Size = UDim2.new(1, 0, 0, 132)
+
+	ui.statusDetected = createTextLabel(
+		indicatorSection,
+		"DetectedPlayer",
+		"Detected: —",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(200, 200, 200),
+		Enum.TextXAlignment.Left
+	)
+	ui.statusDetected.Position = UDim2.new(0, 0, 0, 0)
+
+	ui.statusOwner = createTextLabel(
+		indicatorSection,
+		"OwnerId",
+		"OwnerUserId: —",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(200, 200, 200),
+		Enum.TextXAlignment.Left
+	)
+	ui.statusOwner.Position = UDim2.new(0, 0, 0, 22)
+
+	ui.statusPlot = createTextLabel(
+		indicatorSection,
+		"PlotName",
+		"Plot Name: —",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(200, 200, 200),
+		Enum.TextXAlignment.Left
+	)
+	ui.statusPlot.Position = UDim2.new(0, 0, 0, 44)
+
+	ui.statusPlants = createTextLabel(
+		indicatorSection,
+		"PlantCount",
+		"Plant Count: —",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(200, 200, 200),
+		Enum.TextXAlignment.Left
+	)
+	ui.statusPlants.Position = UDim2.new(0, 0, 0, 66)
+
+	ui.statusAction = createTextLabel(
+		indicatorSection,
+		"CurrentAction",
+		"Action: Idle",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(178, 255, 137),
+		Enum.TextXAlignment.Left
+	)
+	ui.statusAction.Position = UDim2.new(0, 0, 0, 88)
+
+	local actionSection =
+		createRoundedFrame(root, "ActionSection", Color3.fromRGB(18, 20, 24), Color3.fromRGB(46, 220, 100), 1)
+	actionSection.Size = UDim2.new(1, -32, 0, 74)
+	actionSection.Position = UDim2.new(0, 16, 0, 420)
+
+	local actionLayout = Instance.new("UIListLayout")
+	actionLayout.FillDirection = Enum.FillDirection.Horizontal
+	actionLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	actionLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	actionLayout.Padding = UDim.new(0, 16)
+	actionLayout.Parent = actionSection
+
+	ui.startButton = createButton(actionSection, "StartButton", "START")
+	ui.startButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.startButton.TextSize = 14
+
+	ui.stopButton = createButton(actionSection, "StopButton", "STOP")
+	ui.stopButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.stopButton.TextSize = 14
+
+	ui.superButton = createButton(actionSection, "SuperButton", "SUPER WATER")
+	ui.superButton.Size = UDim2.new(0.3, 0, 0, 42)
+	ui.superButton.TextSize = 12
+
+	local logContainer =
+		createRoundedFrame(root, "LogContainer", Color3.fromRGB(12, 14, 18), Color3.fromRGB(60, 255, 144), 1)
+	logContainer.Size = UDim2.new(1, -32, 0, 80)
+	logContainer.Position = UDim2.new(0, 16, 0, 504)
+
+	local logTitle = createTextLabel(
+		logContainer,
+		"LogTitle",
+		"Live Status Log",
+		UDim2.new(1, 0, 0, 18),
+		Color3.fromRGB(178, 255, 137),
+		Enum.TextXAlignment.Left
+	)
+	logTitle.Position = UDim2.new(0, 0, 0, 6)
+	logTitle.TextSize = 13
+
+	local logBox = Instance.new("ScrollingFrame")
+	logBox.Name = "LogBox"
+	logBox.BackgroundTransparency = 1
+	logBox.BorderSizePixel = 0
+	logBox.Position = UDim2.new(0, 0, 0, 28)
+	logBox.Size = UDim2.new(1, 0, 1, -28)
+	logBox.ScrollBarImageColor3 = Color3.fromRGB(110, 255, 142)
+	logBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	logBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+	logBox.Parent = logContainer
+
+	local logLayout = Instance.new("UIListLayout")
+	logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	logLayout.Padding = UDim.new(0, 4)
+	logLayout.Parent = logBox
+
+	ui.logBox = logBox
+	ui.logLayout = logLayout
+	ui.radiusLabel = radiusLabel
+	ui.delayLabel = delayLabel
+
+	return screenGui
+end
+
+local function clamp(value, minValue, maxValue)
+	return math.clamp(value, minValue, maxValue)
+end
+
+local function formatTime(value)
+	return string.format("%.1f", value)
+end
+
+local function updateStatusField(field, text)
+	if field and field:IsA("TextLabel") then
+		field.Text = text
+	end
+end
+
+local function logStatus(message)
+	if not ui.logBox then
+		return
+	end
+	local entry = Instance.new("TextLabel")
+	entry.BackgroundTransparency = 1
+	entry.Size = UDim2.new(1, 0, 0, 18)
+	entry.Font = Enum.Font.RobotoMono
+	entry.Text = "• " .. message
+	entry.TextColor3 = Color3.fromRGB(194, 255, 168)
+	entry.TextSize = 12
+	entry.TextXAlignment = Enum.TextXAlignment.Left
+	entry.TextYAlignment = Enum.TextYAlignment.Center
+	entry.Parent = ui.logBox
+	ui.logBox.CanvasSize = UDim2.new(0, 0, 0, ui.logLayout.AbsoluteContentSize.Y)
+	ui.logBox.CanvasPosition = Vector2.new(0, ui.logLayout.AbsoluteContentSize.Y)
+end
+
+local function clearLog()
+	if ui.logBox then
+		for _, child in ipairs(ui.logBox:GetChildren()) do
+			if child:IsA("TextLabel") then
+				child:Destroy()
+			end
+		end
+		ui.logBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+	end
+end
+
+local function parseTargetInput(input)
+	local trimmed = tostring(input):gsub("^%s*(.-)%s*$", "%1")
+	if trimmed == "" then
+		return nil
+	end
+	return trimmed
+end
+
+local function findTargetPlayer(targetQuery)
+	if not targetQuery then
+		return nil
+	end
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Name == TARGET_NAMES[2] or tostring(p.UserId) == TARGET_NAMES[1] then
+		if string.lower(p.Name) == string.lower(targetQuery) then
+			return p
+		end
+		if tostring(p.UserId) == targetQuery then
 			return p
 		end
 	end
@@ -24,7 +478,7 @@ local function findTargetPlayer()
 end
 
 local function findPlotForUser(userId)
-	local gardens = workspace:FindFirstChild("Gardens")
+	local gardens = workspace:FindFirstChild("Gardens") or workspace:FindFirstChild("Plots")
 	if not gardens then
 		return nil
 	end
@@ -45,127 +499,440 @@ local function getPlantPosition(plant)
 		if plant.PrimaryPart then
 			return plant.PrimaryPart.Position
 		end
-		if plant.GetPivot then
-			local ok, pivot = pcall(function()
-				return plant:GetPivot()
-			end)
-			if ok and pivot then
-				return pivot.Position
-			end
+		local ok, pivot = pcall(function()
+			return plant:GetPivot()
+		end)
+		if ok and pivot then
+			return pivot.Position
 		end
 	elseif plant:IsA("BasePart") then
 		return plant.Position
 	end
-	-- try to find any BasePart child
-	for _, c in ipairs(plant:GetDescendants()) do
-		if c:IsA("BasePart") then
-			return c.Position
+	for _, child in ipairs(plant:GetDescendants()) do
+		if child:IsA("BasePart") then
+			return child.Position
 		end
 	end
 	return nil
 end
 
-local function raycastToGround(pos)
+local function getFirstAvailablePlant(plot)
+	local plantsFolder = plot:FindFirstChild("Plants")
+	if not plantsFolder then
+		return nil, 0
+	end
+	local plants = plantsFolder:GetChildren()
+	if #plants == 0 then
+		return nil, 0
+	end
+	for _, plant in ipairs(plants) do
+		local pos = getPlantPosition(plant)
+		if pos then
+			return plant, #plants
+		end
+	end
+	return plants[1], #plants
+end
+
+local function buildOctagonOffsets(radius)
+	local offsets = {}
+	for k = 1, 8 do
+		local angle = (k - 1) * (2 * math.pi / 8)
+		offsets[k] = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+	end
+	return offsets
+end
+
+local function raycastToGround(position)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { character }
-	local start = pos + Vector3.new(0, 10, 0)
-	local dir = Vector3.new(0, -100, 0)
-	local result = workspace:Raycast(start, dir, params)
+	local origin = position + Vector3.new(0, 15, 0)
+	local direction = Vector3.new(0, -100, 0)
+	local result = workspace:Raycast(origin, direction, params)
 	if result and result.Position then
 		return result.Position
 	end
-	return pos
+	return position
 end
 
--- main
-local target = findTargetPlayer()
-if not target then
-	warn("Target player not found: ", TARGET_NAMES)
-	return
+local function getToolForSprinkler(name)
+	return backpack:FindFirstChild(name) or character:FindFirstChild(name)
 end
 
-local targetId = target.UserId
-local plot = findPlotForUser(targetId)
-if not plot then
-	warn("Plot for user not found. UserId:", targetId)
-	return
+local function equipTool(tool)
+	if not tool or tool.Parent == character then
+		return true
+	end
+	humanoid:EquipTool(tool)
+	local deadline = tick() + 2
+	repeat
+		task.wait()
+	until tool.Parent == character or tick() > deadline
+	return tool.Parent == character
 end
 
-local plotId = tonumber(plot.Name:match("%d+")) or 1
-local plantsFolder = plot:FindFirstChild("Plants")
-if not plantsFolder then
-	warn("No Plants folder in plot:", plot.Name)
-	return
+local function getToolForWateringCan()
+	return backpack:FindFirstChild(WATERING_CAN_NAME) or character:FindFirstChild(WATERING_CAN_NAME)
 end
 
-local plants = plantsFolder:GetChildren()
-if #plants == 0 then
-	warn("No plants found under plot:", plot.Name)
-	return
+local function placeSprinklerAt(position, sprinklerName, plotId)
+	local tool = getToolForSprinkler(sprinklerName)
+	if not tool then
+		logStatus("Tool not available: " .. sprinklerName)
+		return false
+	end
+	if not equipTool(tool) then
+		logStatus("Could not equip " .. sprinklerName)
+		return false
+	end
+	local groundPosition = raycastToGround(position)
+	local success, err = pcall(function()
+		Networking.Place.PlaceSprinkler:Fire(groundPosition, sprinklerName, tool, plotId)
+	end)
+	if not success then
+		warn("Sprinkler placement error:", err)
+		return false
+	end
+	return true
 end
 
-local plant = plants[1]
-local centerPos = getPlantPosition(plant)
-if not centerPos then
-	warn("Couldn't determine plant position for:", plant:GetFullName())
-	return
+local function useSuperWateringCanAt(position)
+	local tool = getToolForWateringCan()
+	if not tool then
+		logStatus("Super Watering Can not found.")
+		return false
+	end
+	if not equipTool(tool) then
+		logStatus("Could not equip Super Watering Can.")
+		return false
+	end
+	local success, err = pcall(function()
+		Networking.WateringCan.UseWateringCan:Fire(position, WATERING_CAN_NAME, tool)
+	end)
+	if not success then
+		warn("Watering can use error:", err)
+		return false
+	end
+	return true
 end
 
--- build 8-point octagon offsets
-local offsets = {}
-do
-	for k = 1, 8 do
-		local angle = (k - 1) * (2 * math.pi / 8)
-		local x = math.cos(angle) * GAP
-		local z = math.sin(angle) * GAP
-		offsets[k] = Vector3.new(x, 0, z)
+local function updateSliderFill(value)
+	local slice = (value - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)
+	slice = clamp(slice, 0, 1)
+	if ui.radiusFill then
+		ui.radiusFill.Size = UDim2.new(slice, 0, 1, 0)
+	end
+	if ui.radiusLabel then
+		ui.radiusLabel.Text = "Radius: " .. formatTime(value) .. " studs"
 	end
 end
 
-local currentIndex = 1
-for i, name in ipairs(SPRINKLERS) do
-	local placed = false
-	for attempt = 0, 7 do
-		local idx = ((currentIndex - 1 + attempt) % 8) + 1
-		local desired = centerPos + offsets[idx]
-		local groundPos = raycastToGround(desired)
+local function refreshSelectionButtons()
+	for key, btn in pairs(ui.typeButtons) do
+		if ui.selectedType == key then
+			btn.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
+			btn.TextColor3 = Color3.fromRGB(233, 255, 190)
+		else
+			btn.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
+			btn.TextColor3 = Color3.fromRGB(178, 255, 137)
+		end
+	end
 
-		print(string.format("Attempting position %d for %s (attempt %d)", idx, name, attempt + 1))
+	if ui.modeSingle then
+		ui.modeSingle.BackgroundColor3 = ui.modeSequence.BackgroundColor3
+		ui.modeSequence.BackgroundColor3 = ui.modeSequence.BackgroundColor3
+		if ui.mode == "Single" then
+			ui.modeSingle.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
+			ui.modeSingle.TextColor3 = Color3.fromRGB(233, 255, 190)
+			ui.modeSequence.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
+			ui.modeSequence.TextColor3 = Color3.fromRGB(178, 255, 137)
+		else
+			ui.modeSequence.BackgroundColor3 = Color3.fromRGB(45, 60, 35)
+			ui.modeSequence.TextColor3 = Color3.fromRGB(233, 255, 190)
+			ui.modeSingle.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
+			ui.modeSingle.TextColor3 = Color3.fromRGB(178, 255, 137)
+		end
+	end
+end
 
-		local tool = backpack:FindFirstChild(name) or character:FindFirstChild(name)
-		if not tool then
-			warn(string.format("Failed at position %d for %s: tool not found, trying next pos...", idx, name))
-			-- try next position
-			task.wait(0.1)
-			goto continue_attempt
+local function setMode(newMode)
+	ui.mode = newMode
+	updateStatusField(ui.statusAction, "Mode set to " .. newMode)
+	refreshSelectionButtons()
+end
+
+local function updateDelayLabel(value)
+	if ui.delayLabel then
+		ui.delayLabel.Text = "Delay: " .. formatTime(value) .. " sec"
+	end
+end
+
+local function getSelectedSprinklerOrder()
+	if ui.mode == "Sequence" then
+		return { "Common", "Uncommon", "Rare", "Legendary" }
+	end
+	if ui.selectedType and SPRINKLER_TYPES[ui.selectedType] then
+		return { ui.selectedType }
+	end
+	return { "Common" }
+end
+
+local function runPlacementCycle()
+	local targetQuery = parseTargetInput(ui.playerInput.Text)
+	if not targetQuery or targetQuery == "" then
+		logStatus("Please enter a valid username or user ID.")
+		return
+	end
+
+	local delayValue = tonumber(ui.delayInput.Text) or DEFAULT_DELAY
+	delayValue = clamp(delayValue, MIN_DELAY, MAX_DELAY)
+	ui.delayInput.Text = formatTime(delayValue)
+	updateDelayLabel(delayValue)
+
+	local radiusValue = tonumber(ui.radiusLabel.Text:match("[0-9]+%.?[0-9]*")) or DEFAULT_RADIUS
+	radiusValue = clamp(radiusValue, MIN_RADIUS, MAX_RADIUS)
+	updateSliderFill(radiusValue)
+
+	clearLog()
+	logStatus("Searching for player...")
+	updateStatusField(ui.statusAction, "Searching for player...")
+
+	local targetPlayer = findTargetPlayer(targetQuery)
+	if not targetPlayer then
+		updateStatusField(ui.statusAction, "Player not found")
+		logStatus("Player not found.")
+		updateStatusField(ui.statusDetected, "Detected: —")
+		return
+	end
+
+	updateStatusField(ui.statusDetected, "Detected: " .. targetPlayer.Name)
+	logStatus("Player found.")
+	updateStatusField(ui.statusAction, "Locating garden...")
+
+	local plot = findPlotForUser(targetPlayer.UserId)
+	if not plot then
+		updateStatusField(ui.statusAction, "Garden missing")
+		logStatus("Garden not found for player.")
+		updateStatusField(ui.statusOwner, "OwnerUserId: —")
+		updateStatusField(ui.statusPlot, "Plot Name: —")
+		updateStatusField(ui.statusPlants, "Plant Count: —")
+		return
+	end
+
+	updateStatusField(ui.statusOwner, "OwnerUserId: " .. tostring(targetPlayer.UserId))
+	updateStatusField(ui.statusPlot, "Plot Name: " .. tostring(plot.Name))
+	logStatus("Locating garden...")
+	logStatus("Garden found.")
+	updateStatusField(ui.statusAction, "Finding plant...")
+
+	local plant, plantCount = getFirstAvailablePlant(plot)
+	if not plant then
+		updateStatusField(ui.statusAction, "No plant available")
+		logStatus("No plants available in garden.")
+		updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
+		return
+	end
+
+	updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
+	local centerPosition = getPlantPosition(plant)
+	if not centerPosition then
+		updateStatusField(ui.statusAction, "Invalid plant")
+		logStatus("Unable to determine plant position.")
+		return
+	end
+	logStatus("Plant located.")
+	updateStatusField(ui.statusAction, "Preparing sprinklers...")
+
+	local offsets = buildOctagonOffsets(radiusValue)
+	local plotId = tonumber(plot.Name:match("%d+")) or 0
+	local order = getSelectedSprinklerOrder()
+
+	for index, sprinklerKey in ipairs(order) do
+		if cancelRequested then
+			logStatus("Placement stopped.")
+			updateStatusField(ui.statusAction, "Stopped")
+			break
 		end
 
-		if tool.Parent ~= character then
-			humanoid:EquipTool(tool)
-			local timeout = tick() + 2
-			repeat
-				task.wait()
-			until tool.Parent == character or tick() > timeout
+		local sprinklerName = SPRINKLER_TYPES[sprinklerKey]
+		local statusText = "Spawning " .. sprinklerKey .. "..."
+		updateStatusField(ui.statusAction, statusText)
+		logStatus(statusText)
+
+		local placementIndex = ((index - 1) % #offsets) + 1
+		local targetPosition = centerPosition + offsets[placementIndex]
+		local placed = placeSprinklerAt(targetPosition, sprinklerName, plotId)
+		if placed then
+			logStatus("Placed " .. sprinklerKey .. "")
+		else
+			logStatus("Failed to place " .. sprinklerKey .. ", moving on.")
 		end
 
-		-- fire placement
-		Networking.Place.PlaceSprinkler:Fire(groundPos, name, tool, plotId)
-		print(string.format("Placed %s at position %d for plot %s", name, idx, plot.Name))
-		placed = true
-		-- next sprinkler should start at the next slot after this one
-		currentIndex = (idx % 8) + 1
-		task.wait(DELAY)
-		break
-
-		::continue_attempt::
+		if index < #order and not cancelRequested then
+			logStatus("Waiting " .. formatTime(delayValue) .. " seconds...")
+			task.wait(delayValue)
+		end
 	end
 
-	if not placed then
-		warn(string.format("Could not place %s after trying 8 positions; moving to next sprinkler." , name))
-		-- advance start index to avoid retrying same cluster
-		currentIndex = (currentIndex % 8) + 1
+	if not cancelRequested then
+		logStatus("Completed successfully.")
+		updateStatusField(ui.statusAction, "Completed")
+	end
+	cancelRequested = false
+	isRunning = false
+end
+
+local function superWaterPressed()
+	if isRunning then
+		logStatus("Cannot use Super Watering Can while placement is running.")
+		return
+	end
+
+	local targetQuery = parseTargetInput(ui.playerInput.Text)
+	if not targetQuery or targetQuery == "" then
+		logStatus("Please enter a valid username or user ID.")
+		return
+	end
+
+	logStatus("Searching for player...")
+	updateStatusField(ui.statusAction, "Searching for player...")
+
+	local targetPlayer = findTargetPlayer(targetQuery)
+	if not targetPlayer then
+		updateStatusField(ui.statusAction, "Player not found")
+		logStatus("Player not found.")
+		return
+	end
+
+	updateStatusField(ui.statusDetected, "Detected: " .. targetPlayer.Name)
+	logStatus("Player found.")
+	updateStatusField(ui.statusAction, "Locating garden...")
+
+	local plot = findPlotForUser(targetPlayer.UserId)
+	if not plot then
+		updateStatusField(ui.statusAction, "Garden missing")
+		logStatus("Garden not found for player.")
+		return
+	end
+
+	updateStatusField(ui.statusOwner, "OwnerUserId: " .. tostring(targetPlayer.UserId))
+	updateStatusField(ui.statusPlot, "Plot Name: " .. tostring(plot.Name))
+	logStatus("Garden found.")
+	updateStatusField(ui.statusAction, "Finding plant...")
+
+	local plant, plantCount = getFirstAvailablePlant(plot)
+	if not plant then
+		updateStatusField(ui.statusAction, "No plant available")
+		logStatus("No plants available in garden.")
+		return
+	end
+
+	updateStatusField(ui.statusPlants, "Plant Count: " .. tostring(plantCount))
+	local centerPosition = getPlantPosition(plant)
+	if not centerPosition then
+		updateStatusField(ui.statusAction, "Invalid plant")
+		logStatus("Unable to determine plant position.")
+		return
+	end
+
+	updateStatusField(ui.statusAction, "Using Super Watering Can...")
+	logStatus("Using Super Watering Can...")
+
+	if useSuperWateringCanAt(centerPosition) then
+		logStatus("Super Watering Can activated.")
+		updateStatusField(ui.statusAction, "Super Watering Can used")
+	else
+		logStatus("Super Watering Can failed.")
+		updateStatusField(ui.statusAction, "Failed")
 	end
 end
 
-print("Finished placing sprinklers for plot", plot.Name)
+local function startPressed()
+	if isRunning then
+		return
+	end
+	isRunning = true
+	cancelRequested = false
+	currentTask = task.spawn(runPlacementCycle)
+end
+
+local function stopPressed()
+	if not isRunning then
+		return
+	end
+	cancelRequested = true
+	updateStatusField(ui.statusAction, "Stopping...")
+	logStatus("Stop requested.")
+end
+
+local function initializeUI()
+	createInterface()
+	ui.selectedType = "Common"
+	ui.mode = "Sequence"
+	refreshSelectionButtons()
+	updateSliderFill(DEFAULT_RADIUS)
+	updateDelayLabel(DEFAULT_DELAY)
+
+	for key, btn in pairs(ui.typeButtons) do
+		btn.MouseButton1Click:Connect(function()
+			ui.selectedType = key
+			setMode("Single")
+		end)
+	end
+
+	ui.modeSingle.MouseButton1Click:Connect(function()
+		setMode("Single")
+	end)
+
+	ui.modeSequence.MouseButton1Click:Connect(function()
+		setMode("Sequence")
+	end)
+
+	ui.startButton.MouseButton1Click:Connect(startPressed)
+	ui.stopButton.MouseButton1Click:Connect(stopPressed)
+	ui.superButton.MouseButton1Click:Connect(superWaterPressed)
+
+	local slider = ui.radiusSlider
+	local sliderHit = ui.radiusHit
+	local dragging = false
+	local function updateRadiusFromInput(inputX)
+		local left = slider.AbsolutePosition.X
+		local width = slider.AbsoluteSize.X
+		local ratio = clamp((inputX - left) / width, 0, 1)
+		local value = MIN_RADIUS + ratio * (MAX_RADIUS - MIN_RADIUS)
+		value = math.floor(value * 10 + 0.5) / 10
+		updateSliderFill(value)
+	end
+
+	sliderHit.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			updateRadiusFromInput(input.Position.X)
+		end
+	end)
+
+	sliderHit.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateRadiusFromInput(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	ui.delayInput.FocusLost:Connect(function(enterPressed)
+		local value = tonumber(ui.delayInput.Text)
+		if not value then
+			value = DEFAULT_DELAY
+		end
+		value = clamp(value, MIN_DELAY, MAX_DELAY)
+		ui.delayInput.Text = formatTime(value)
+		updateDelayLabel(value)
+	end)
+end
+
+initializeUI()
