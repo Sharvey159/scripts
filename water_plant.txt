@@ -1,0 +1,247 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local WATERING_CAN_NAME = "Super Watering Can"
+
+local function getCharacter()
+	return player.Character or player.CharacterAdded:Wait()
+end
+
+local function findTargetPlayer(targetQuery)
+	if not targetQuery or targetQuery == "" then
+		return nil
+	end
+
+	targetQuery = targetQuery:match("^%s*(.-)%s*$")
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name) == string.lower(targetQuery)
+			or tostring(p.UserId) == targetQuery then
+			return p
+		end
+	end
+
+	return nil
+end
+
+local function findPlotForUser(userId)
+	local gardens = workspace:FindFirstChild("Gardens") or workspace:FindFirstChild("Plots")
+	if not gardens then
+		return nil
+	end
+
+	for _, plot in ipairs(gardens:GetChildren()) do
+		if tostring(plot:GetAttribute("OwnerUserId")) == tostring(userId) then
+			return plot
+		end
+	end
+
+	return nil
+end
+
+local function getPlantPosition(plant)
+	if not plant then
+		return nil
+	end
+
+	if plant:IsA("Model") and plant.PrimaryPart then
+		return plant.PrimaryPart.Position
+	end
+
+	local ok, pivot = pcall(function()
+		return plant:GetPivot()
+	end)
+
+	if ok then
+		return pivot.Position
+	end
+
+	if plant:IsA("BasePart") then
+		return plant.Position
+	end
+
+	for _, obj in ipairs(plant:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			return obj.Position
+		end
+	end
+
+	return nil
+end
+
+local function getFirstAvailablePlant(plot)
+	local folder = plot:FindFirstChild("Plants")
+	if not folder then
+		return nil
+	end
+
+	for _, plant in ipairs(folder:GetChildren()) do
+		if getPlantPosition(plant) then
+			return plant
+		end
+	end
+
+	return nil
+end
+
+local function equipTool(toolName)
+	local character = getCharacter()
+
+	local tool =
+		player.Backpack:FindFirstChild(toolName)
+		or character:FindFirstChild(toolName)
+
+	if not tool then
+		warn(toolName .. " not found.")
+		return nil
+	end
+
+	if tool.Parent ~= character then
+		local humanoid = character:FindFirstChild("Humanoid")
+
+		if humanoid then
+			humanoid:EquipTool(tool)
+		end
+
+		local timeout = tick() + 2
+
+		repeat
+			task.wait()
+		until tool.Parent == character or tick() > timeout
+
+		task.wait(0.1)
+	end
+
+	return tool
+end
+
+local function waterPlant(targetQuery)
+	local targetPlayer = findTargetPlayer(targetQuery)
+	if not targetPlayer then
+		warn("Player not found.")
+		return
+	end
+
+	local plot = findPlotForUser(targetPlayer.UserId)
+	if not plot then
+		warn("Plot not found.")
+		return
+	end
+
+	local plant = getFirstAvailablePlant(plot)
+	if not plant then
+		warn("No plant found.")
+		return
+	end
+
+	local position = getPlantPosition(plant)
+	if not position then
+		warn("Could not determine plant position.")
+		return
+	end
+
+	local tool = equipTool(WATERING_CAN_NAME)
+	if not tool then
+		return
+	end
+
+	pcall(function()
+		Networking.WateringCan.UseWateringCan:Fire(
+			position,
+			WATERING_CAN_NAME,
+			tool
+		)
+	end)
+end
+
+local function createUI()
+	local existing = playerGui:FindFirstChild("WaterAdminPanel")
+	if existing then
+		existing:Destroy()
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "WaterAdminPanel"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0, 220, 0, 90)
+	frame.Position = UDim2.new(0.5, -110, 0.8, -90)
+	frame.BackgroundColor3 = Color3.fromRGB(25,25,30)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0,8)
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0,8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.Parent = frame
+
+	local input = Instance.new("TextBox")
+	input.Size = UDim2.new(0.9,0,0,30)
+	input.BackgroundColor3 = Color3.fromRGB(15,15,20)
+	input.TextColor3 = Color3.new(1,1,1)
+	input.PlaceholderText = "Player Name"
+	input.Text = player.Name
+	input.Font = Enum.Font.Gotham
+	input.TextSize = 14
+	input.Parent = frame
+
+	Instance.new("UICorner", input).CornerRadius = UDim.new(0,4)
+
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(0.9,0,0,35)
+	button.BackgroundColor3 = Color3.fromRGB(80,170,255)
+	button.Text = "Water Plant"
+	button.TextColor3 = Color3.new(1,1,1)
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 14
+	button.Parent = frame
+
+	Instance.new("UICorner", button).CornerRadius = UDim.new(0,4)
+
+	button.MouseButton1Click:Connect(function()
+		task.spawn(waterPlant, input.Text)
+	end)
+
+	local dragging
+	local dragStart
+	local startPos
+
+	frame.InputBegan:Connect(function(inputObject)
+		if inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = inputObject.Position
+			startPos = frame.Position
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(inputObject)
+		if dragging and inputObject.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = inputObject.Position - dragStart
+			frame.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(inputObject)
+		if inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+end
+
+createUI()
