@@ -327,7 +327,7 @@ local function startShovel(toolName)
         processed += 1
         setState(("Shoveling... %d/%d"):format(processed, total))
         shovelFruit(fruit.Instance)
-        task.wait(0.3)
+        task.wait(0.65)
     end
     setState(("Shoveling Complete (%d/%d)"):format(processed, total))
 end
