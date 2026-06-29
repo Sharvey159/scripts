@@ -31,7 +31,7 @@ local allPlants = {} -- Added missing declaration
 
 -- 3. Build UI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AdminPanel v2"
+screenGui.Name = "AdminPanel"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel"
+title.Text = "Admin Panel v2"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
