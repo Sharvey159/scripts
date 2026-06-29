@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v3"
+title.Text = "Admin Panel v4"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -193,10 +193,7 @@ local function harvestFruit(fruitInstance)
 
     print("Fruit:", fruitInstance:GetFullName())
 
-    local plant = fruitInstance.Parent
-    print("Parent:", plant)
-
-    local plantId = plant and plant:GetAttribute("PlantId")
+    local plantId = fruitInstance:GetAttribute("PlantId")
     print("PlantId:", plantId)
 
     if not plantId then
@@ -253,17 +250,62 @@ local function equipTool(toolName)
 end
 
 local function shovelFruit(fruitInstance)
-    if not fruitInstance then return end
-    local plantId = fruitInstance.Parent:GetAttribute("PlantId")
-    if not plantId then return end
-    local fruitId = fruitInstance:GetAttribute("FruitId")
-    if not fruitId then return end
+    print("🪓 shovelFruit called")
 
-    local equippedTool = player.Character and player.Character:FindFirstChildOfClass("Tool")
-    if not equippedTool then return end
+    if not fruitInstance then
+        warn("❌ fruitInstance is nil")
+        return
+    end
+
+    print("📦 FruitInstance:", fruitInstance:GetFullName())
+
+    local plantId = fruitInstance:GetAttribute("PlantId")
+    print("🆔 PlantId:", plantId)
+
+    if not plantId then
+        warn("❌ Missing PlantId")
+        return
+    end
+
+    local fruitId = fruitInstance:GetAttribute("FruitId")
+    print("🍎 FruitId:", fruitId)
+
+    if not fruitId then
+        warn("❌ Missing FruitId")
+        return
+    end
+
+    local character = player.Character
+    print("🧍 Character:", character)
+
+    if not character then
+        warn("❌ No character")
+        return
+    end
+
+    local equippedTool = character:FindFirstChildOfClass("Tool")
+    print("🧰 EquippedTool:", equippedTool)
+
+    if not equippedTool then
+        warn("❌ No equipped tool found")
+        return
+    end
 
     local shovelType = equippedTool:GetAttribute("Shovel")
-    Networking.Shovel.UseShovel:Fire(plantId, fruitId, shovelType, equippedTool)
+    print("🔧 ShovelType:", shovelType)
+
+    print("🚀 About to fire UseShovel remote")
+
+    local ok, err = pcall(function()
+        Networking.Shovel.UseShovel:Fire(
+            plantId,
+            fruitId,
+            shovelType,
+            equippedTool
+        )
+    end)
+
+    print("📡 Fire result:", ok, err)
 end
 
 local function startShovel(toolName)
