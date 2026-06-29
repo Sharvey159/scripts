@@ -567,21 +567,32 @@ local function doScan(favouriteFilter, btn, label)
 	end
 
 	local total = #fruits
+	local SCAN_INTERVAL = 0.1
+	local nextTime = os.clock()
+
 	for i, entry in ipairs(fruits) do
+		-- hard timing gate (FPS-proof)
+		local now = os.clock()
+		if now < nextTime then
+			task.wait(nextTime - now)
+		end
+		nextTime = os.clock() + SCAN_INTERVAL
+
 		btn.Text = string.format("Scanning %d/%d...", i, total)
+
 		local ok, result = pcall(function()
 			return Networking.NPCS.GetFruitBid:Fire(entry.id)
 		end)
+
 		if ok and result then
 			local currentValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
 
 			local multiplier = FruitStockMultipliers[entry.name] or 1
 			entry.value = currentValue / multiplier
 		end
-		entry.tierIdx = getTierIndex(entry.value)
-		task.wait(0.1)
-	end
 
+		entry.tierIdx = getTierIndex(entry.value or 0)
+	end
 	table.sort(fruits, function(a, b)
 		return a.value > b.value
 	end)
@@ -592,7 +603,6 @@ local function doScan(favouriteFilter, btn, label)
 	startBackpackWatch()
 	renderList()
 end
-
 
 -- =====================
 -- SCAN BUTTONS
@@ -837,7 +847,6 @@ dropValBtn.MouseButton1Click:Connect(function()
 		end
 
 		local function dropEntry(entry)
-            
 			if filter.type == "target" then
 				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
 			else
