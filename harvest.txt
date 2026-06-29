@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v17"
+title.Text = "Admin Panel v18"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -164,7 +164,7 @@ local function scanPlants()
                         Instance = fruit,
                     }
 
-                   if weight <= 40 then
+                   if weight <= 45 then
                         table.insert(harvestPlants, fruitData)
                    elseif weight < 60 then
                         table.insert(shovelPlants, fruitData)
