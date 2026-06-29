@@ -31,7 +31,7 @@ local allPlants = {} -- Added missing declaration
 
 -- 3. Build UI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AdminPanel"
+screenGui.Name = "AdminPanel v2"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -190,6 +190,9 @@ local function harvestFruit(fruitInstance)
     local fruitId = fruitInstance:GetAttribute("FruitId")
     if not fruitId then return end
 
+
+    print(Networking.Garden.CollectFruits)
+    print(Networking.Garden.CollectFruits.Fire)
     Networking.Garden.CollectFruits:Fire(plantId, fruitId)
 end
 
