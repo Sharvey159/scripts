@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v6"
+title.Text = "Admin Panel v7"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -249,17 +249,6 @@ local function equipTool(toolName)
     return true
 end
 
-local function waitForShovelAck(fruitId)
-    return new Promise(function(resolve)
-        local conn
-        conn = Networking.Shovel.Completed:Connect(function(id)
-            if id == fruitId then
-                conn:Disconnect()
-                resolve()
-            end
-        end)
-    end)
-end
 
 local function shovelFruit(fruitInstance)
     print("🪓 shovelFruit called")
@@ -318,8 +307,6 @@ local function shovelFruit(fruitInstance)
     end)
 
     print("📡 Fire result:", ok, err)
-
-    waitForShovelAck(fruitId)
 end
 
 local function startShovel(toolName)
