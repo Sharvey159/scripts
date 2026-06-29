@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v8"
+title.Text = "Admin Panel v9"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -250,63 +250,26 @@ local function equipTool(toolName)
 end
 
 
-local function shovelFruit(fruitInstance)
-    print("🪓 shovelFruit called")
+local shovelQueue = {}
+local isShoveling = false
 
-    if not fruitInstance then
-        warn("❌ fruitInstance is nil")
-        return
+local function enqueueShovel(fruit)
+    table.insert(shovelQueue, fruit)
+end
+
+local function processShovelQueue()
+    if isShoveling then return end
+    isShoveling = true
+
+    while #shovelQueue > 0 do
+        local fruit = table.remove(shovelQueue, 1)
+
+        shovelFruit(fruit.Instance)
+
+        task.wait(0.35) -- pacing to avoid server throttle
     end
 
-    print("📦 FruitInstance:", fruitInstance:GetFullName())
-
-    local plantId = fruitInstance:GetAttribute("PlantId")
-    print("🆔 PlantId:", plantId)
-
-    if not plantId then
-        warn("❌ Missing PlantId")
-        return
-    end
-
-    local fruitId = fruitInstance:GetAttribute("FruitId")
-    print("🍎 FruitId:", fruitId)
-
-    if not fruitId then
-        warn("❌ Missing FruitId")
-        return
-    end
-
-    local character = player.Character
-    print("🧍 Character:", character)
-
-    if not character then
-        warn("❌ No character")
-        return
-    end
-
-    local equippedTool = character:FindFirstChildOfClass("Tool")
-    print("🧰 EquippedTool:", equippedTool)
-
-    if not equippedTool then
-        warn("❌ No equipped tool found")
-        return
-    end
-
-    local shovelType = equippedTool:GetAttribute("Shovel")
-    print("🔧 ShovelType:", shovelType)
-
-    print("🚀 About to fire UseShovel remote")
-
-    local ok, err = pcall(function()
-        Networking.Shovel.UseShovel:Fire(
-            plantId,
-            fruitId,
-            shovelType,
-            equippedTool
-        )
-    end)
-
-    print("📡 Fire result:", ok, err)
+    isShoveling = false
 end
 
 local function startShovel(toolName)
@@ -321,25 +284,18 @@ local function startShovel(toolName)
         return
     end
 
-    local total = #shovelPlants
-    local processed = 0
+    table.clear(shovelQueue)
+
     for _, fruit in ipairs(shovelPlants) do
-        processed += 1
-        setState(("Shoveling... %d/%d"):format(processed, total))
-        shovelFruit(fruit.Instance)
-        task.wait(0.15)
+        enqueueShovel(fruit)
     end
-    setState(("Shoveling Complete (%d/%d)"):format(processed, total))
+
+    setState(("Shoveling %d items..."):format(#shovelPlants))
+
+    processShovelQueue()
+
+    setState(("Shovel Complete (%d)"):format(#shovelPlants))
 end
-
--- 5. Wiring the UI Buttons
-scanButton.MouseButton1Click:Connect(function()
-    scanPlants()
-end)
-
-shovelButton.MouseButton1Click:Connect(function()
-    startShovel(SHOVEL_NAME)
-end)
 
 harvestButton.MouseButton1Click:Connect(function()
     startHarvest()
