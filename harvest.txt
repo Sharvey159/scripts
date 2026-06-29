@@ -1,0 +1,272 @@
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local FruitVisualizerController = require(player.PlayerScripts.Controllers.FruitVisualizerController)
+local Networking = require(RS.SharedModules.Networking)
+
+local myPlot
+
+for _, plot in ipairs(workspace.Gardens:GetChildren()) do
+	if plot:GetAttribute("OwnerUserId") == player.UserId then
+		myPlot = plot
+		break
+	end
+end
+
+if not myPlot then
+	warn("Couldn't find your plot!")
+	return
+end
+
+local SHOVEL_NAME = "Shovel"
+
+local allPlants = {}
+local harvestPlants = {}
+local keptPlants = {}
+local shovelPlants = {}
+
+local function scanPlants()
+	table.clear(harvestPlants)
+	table.clear(keptPlants)
+	table.clear(shovelPlants)
+	table.clear(allPlants)
+
+	for _, plant in ipairs(myPlot.Plants:GetChildren()) do
+		local fruits = plant:FindFirstChild("Fruits")
+
+		if fruits then
+			local plantId = plant:GetAttribute("PlantId") or plant.Name
+
+			if plantId then
+				for _, fruit in ipairs(fruits:GetChildren()) do
+					local name = fruit:GetAttribute("CorePartName")
+					local id = fruit:GetAttribute("PlantId")
+
+					if not id or not name then
+						warn("Fruit missing CorePartName or PlantId attribute")
+						continue
+					end
+
+					local mutation = fruit:GetAttribute("Mutation")
+					if not mutation or mutation == "" then
+						mutation = "None"
+					end
+
+					local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
+
+					if not weight and FruitVisualizerController.CalculatePlantWeight then
+						weight = FruitVisualizerController:CalculatePlantWeight(fruit)
+					end
+
+					weight = tonumber(weight) or 0
+
+					local fruitData = {
+						PlantId = plantId,
+						Id = id,
+						Name = name,
+						Weight = weight,
+						Mutation = mutation,
+						Instance = fruit,
+					}
+
+					if weight >= 38 then
+						if mutation == "None" then
+							table.insert(keptPlants, fruitData)
+						else
+							table.insert(harvestPlants, fruitData)
+						end
+					else
+						table.insert(shovelPlants, fruitData)
+					end
+				end
+			end
+		end
+	end
+
+	print("State: Scan Complete")
+end
+
+scanPlants()
+
+print("===== HARVEST FRUITS =====")
+
+for _, fruit in ipairs(harvestPlants) do
+	print(("Name: %s | Weight: %.2f | Mutation: %s | Action: Harvest"):format(fruit.Name, fruit.Weight, fruit.Mutation))
+end
+
+local function shovelFruit(plantModel)
+	if not fruitInstance then
+		return
+	end
+
+	local plantId = fruitInstance.Parent:GetAttribute("PlantId")
+	if not plantId then
+		return
+	end
+
+	-- Verify the fruit has a FruitId
+	local fruitId = fruitInstance:GetAttribute("FruitId")
+	if not fruitId then
+		return
+	end
+
+	-- Find the parent plant model
+	local plantModel = fruitInstance.Parent
+	if not plantModel then
+		return
+	end
+
+	-- Verify the plant has a PlantId
+	local plantId = plantModel:GetAttribute("PlantId") or plantModel.Name
+	if not plantId then
+		return
+	end
+
+	-- Mock-up only
+	print("Would shovel fruit:")
+	print("PlantId:", plantId)
+	print("FruitId:", fruitId)
+
+	-- Mock-up only
+	print("Would shovel fruit:")
+	print("PlantId:", plantId)
+	print("Fruit:", fruitModel.Name)
+
+	-- Placeholder for the real shovel action.
+	-- Example:
+	-- UseShovel(plantId, fruitId, equippedShovel)
+	local equippedTool = player.Character and player.Character:FindFirstChildOfClass("Tool")
+
+	if not equippedTool then
+		warn("No equipped tool found.")
+		return
+	end
+
+	local shovelType = equippedTool:GetAttribute("Shovel")
+
+	Networking.Garden.Networking.Garden.CollectFruits.Fire(plantId, fruitId)
+end
+
+local function startHarvest()
+	local total = #harvestPlants
+	local processed = 0
+
+	for _, fruit in ipairs(harvestPlants) do
+		processed += 1
+
+		print(("State: Harvesting... %d/%d"):format(processed, total))
+
+		harvestFruit(fruit.Instance.Parent)
+
+		print(
+			("Name: %s | Weight: %.2f | Mutation: %s | Action: Shovel"):format(fruit.Name, fruit.Weight, fruit.Mutation)
+		)
+
+		task.wait(0.1)
+	end
+
+	print(("State: Shoveling Complete (%d/%d)"):format(processed, total))
+end
+
+print("=====KEPT FRUITS =====")
+
+for _, fruit in ipairs(keptPlants) do
+	print(("Name: %s | Weight: %.2f | Mutation: %s | Action: Kept"):format(fruit.Name, fruit.Weight, fruit.Mutation))
+end
+
+print("\n===== SHOVEL FRUITS =====")
+
+local function equipTool(toolName)
+	local character = player.Character
+	if not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not humanoid then
+		return false
+	end
+
+	local tool = character:FindFirstChild(toolName) or player.Backpack:FindFirstChild(toolName)
+
+	if not tool then
+		return false
+	end
+
+	humanoid:EquipTool(tool)
+
+	return true
+end
+
+local function shovelFruit(fruitInstance)
+	if not fruitInstance then
+		return
+	end
+
+	local plantId = fruitInstance.Parent:GetAttribute("PlantId")
+	if not plantId then
+		return
+	end
+
+	-- Verify the fruit has a FruitId
+	local fruitId = fruitInstance:GetAttribute("FruitId")
+	if not fruitId then
+		return
+	end
+
+	-- Find the parent plant model
+	local plantModel = fruitInstance.Parent
+	if not plantModel then
+		return
+	end
+
+	-- Verify the plant has a PlantId
+	local plantId = plantModel:GetAttribute("PlantId") or plantModel.Name
+	if not plantId then
+		return
+	end
+
+	-- Mock-up only
+	print("Would shovel fruit:")
+	print("PlantId:", plantId)
+	print("FruitId:", fruitId)
+
+	local equippedTool = player.Character and player.Character:FindFirstChildOfClass("Tool")
+
+	if not equippedTool then
+		warn("No equipped tool found.")
+		return
+	end
+
+	local shovelType = equippedTool:GetAttribute("Shovel")
+
+	Networking.Shovel.UseShovel:Fire(plantId, fruitId, shovelType, equippedTool)
+end
+
+local function startShovel(toolName)
+	if not equipTool(toolName) then
+		warn("Failed to equip shovel!")
+		return
+	end
+
+	local total = #shovelPlants
+	local processed = 0
+
+	for _, fruit in ipairs(shovelPlants) do
+		processed += 1
+
+		print(("State: Shoveling... %d/%d"):format(processed, total))
+
+		shovelFruit(fruit.Instance)
+
+		print(
+			("Name: %s | Weight: %.2f | Mutation: %s | Action: Shovel"):format(fruit.Name, fruit.Weight, fruit.Mutation)
+		)
+
+		task.wait(0.1)
+	end
+
+	print(("State: Shoveling Complete (%d/%d)"):format(processed, total))
+end
+
+startShovel(SHOVEL_NAME)
