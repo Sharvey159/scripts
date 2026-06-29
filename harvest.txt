@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v2"
+title.Text = "Admin Panel v3"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -184,16 +184,42 @@ local function scanPlants()
 end
 
 local function harvestFruit(fruitInstance)
-    if not fruitInstance then return end
-    local plantId = fruitInstance.Parent:GetAttribute("PlantId")
-    if not plantId then return end
+    print("harvestFruit called")
+
+    if not fruitInstance then
+        warn("fruitInstance is nil")
+        return
+    end
+
+    print("Fruit:", fruitInstance:GetFullName())
+
+    local plant = fruitInstance.Parent
+    print("Parent:", plant)
+
+    local plantId = plant and plant:GetAttribute("PlantId")
+    print("PlantId:", plantId)
+
+    if not plantId then
+        warn("Missing PlantId")
+        return
+    end
+
     local fruitId = fruitInstance:GetAttribute("FruitId")
-    if not fruitId then return end
+    print("FruitId:", fruitId)
 
+    -- Try removing this check temporarily
+    -- if not fruitId then
+    --     warn("Missing FruitId")
+    --     return
+    -- end
 
-    print(Networking.Garden.CollectFruits)
-    print(Networking.Garden.CollectFruits.Fire)
-    Networking.Garden.CollectFruits:Fire(plantId, fruitId)
+    print("About to fire CollectFruits")
+
+    local ok, err = pcall(function()
+        Networking.Garden.CollectFruits:Fire(plantId, fruitId or "")
+    end)
+
+    print("Fire returned:", ok, err)
 end
 
 local function startHarvest()
