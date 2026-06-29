@@ -179,22 +179,17 @@ local function scanPlants()
     end
 
     setState(("Scan Complete: S:%d H:%d K:%d"):format(#shovelPlants, #harvestPlants, #keptPlants))
-    print("===== SCAN COMPLETE =====")
-    print("Harvest:", #harvestPlants, "| Shovel:", #shovelPlants, "| Kept:", #keptPlants)
 end
 
 local function harvestFruit(fruitInstance)
-    print("harvestFruit called")
 
     if not fruitInstance then
         warn("fruitInstance is nil")
         return
     end
 
-    print("Fruit:", fruitInstance:GetFullName())
 
     local plantId = fruitInstance:GetAttribute("PlantId")
-    print("PlantId:", plantId)
 
     if not plantId then
         warn("Missing PlantId")
@@ -202,7 +197,6 @@ local function harvestFruit(fruitInstance)
     end
 
     local fruitId = fruitInstance:GetAttribute("FruitId")
-    print("FruitId:", fruitId)
 
     -- Try removing this check temporarily
     -- if not fruitId then
@@ -210,13 +204,11 @@ local function harvestFruit(fruitInstance)
     --     return
     -- end
 
-    print("About to fire CollectFruit")
 
     local ok, err = pcall(function()
         Networking.Garden.CollectFruit:Fire(plantId, fruitId or "")
     end)
 
-    print("Fire returned:", ok, err)
 end
 
 local function startHarvest()
@@ -251,17 +243,14 @@ end
 
 
 local function shovelFruit(fruitInstance)
-    print("🪓 shovelFruit called")
 
     if not fruitInstance then
         warn("❌ fruitInstance is nil")
         return
     end
 
-    print("📦 FruitInstance:", fruitInstance:GetFullName())
 
     local plantId = fruitInstance:GetAttribute("PlantId")
-    print("🆔 PlantId:", plantId)
 
     if not plantId then
         warn("❌ Missing PlantId")
@@ -269,7 +258,6 @@ local function shovelFruit(fruitInstance)
     end
 
     local fruitId = fruitInstance:GetAttribute("FruitId")
-    print("🍎 FruitId:", fruitId)
 
     if not fruitId then
         warn("❌ Missing FruitId")
@@ -277,7 +265,6 @@ local function shovelFruit(fruitInstance)
     end
 
     local character = player.Character
-    print("🧍 Character:", character)
 
     if not character then
         warn("❌ No character")
@@ -285,7 +272,6 @@ local function shovelFruit(fruitInstance)
     end
 
     local equippedTool = character:FindFirstChildOfClass("Tool")
-    print("🧰 EquippedTool:", equippedTool)
 
     if not equippedTool then
         warn("❌ No equipped tool found")
@@ -293,9 +279,7 @@ local function shovelFruit(fruitInstance)
     end
 
     local shovelType = equippedTool:GetAttribute("Shovel")
-    print("🔧 ShovelType:", shovelType)
 
-    print("🚀 About to fire UseShovel remote")
 
     local ok, err = pcall(function()
         Networking.Shovel.UseShovel:Fire(
@@ -305,8 +289,6 @@ local function shovelFruit(fruitInstance)
             equippedTool
         )
     end)
-
-    print("📡 Fire result:", ok, err)
 end
 
 local SHOVEL_INTERVAL = 0.65
