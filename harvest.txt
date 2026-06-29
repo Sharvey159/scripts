@@ -57,7 +57,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v13"
+title.Text = "Admin Panel v14"
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -309,6 +309,8 @@ local function shovelFruit(fruitInstance)
     print("📡 Fire result:", ok, err)
 end
 
+local SHOVEL_INTERVAL = 0.65
+
 local function startShovel(toolName)
     if #shovelPlants == 0 then
         setState("No plants to shovel!")
@@ -323,13 +325,25 @@ local function startShovel(toolName)
 
     local total = #shovelPlants
     local processed = 0
+
+    local nextAllowedTime = os.clock()
+
     for _, fruit in ipairs(shovelPlants) do
+        -- wait until we are allowed to fire again
+        local now = os.clock()
+        if now < nextAllowedTime then
+            task.wait(nextAllowedTime - now)
+        end
+
+        nextAllowedTime = os.clock() + SHOVEL_INTERVAL
+
         processed += 1
         setState(("Shoveling... %d/%d"):format(processed, total))
+
         shovelFruit(fruit.Instance)
-        task.wait(0.65)
     end
-    setState(("Shoveling Complete (%d/%d)"):format(processed, total))
+
+    setState(("Shovel Complete (%d/%d)"):format(processed, total))
 end
 
 -- 5. Wiring the UI Buttons
