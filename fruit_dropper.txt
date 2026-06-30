@@ -556,7 +556,7 @@ local function doScan(favouriteFilter, btn, label)
 						id = item:GetAttribute("Id"),
 						name = item:GetAttribute("FruitName") or item.Name,
 						mutation = item:GetAttribute("Mutation") or "",
-						kg = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
+						kg = item:GetAttribute("Weight") or 0),
 						favorite = fav,
 						value = 0,
 						tierIdx = nil,
