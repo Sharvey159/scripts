@@ -19,13 +19,13 @@ end
 
 if not myPlot then
     warn("Couldn't find your plot!")
-    return -- Stops script execution if no plot is found to prevent errors
+    return
 end
 
 -- 2. Variables
 local SHOVEL_NAME = "Shovel"
 local SHOVEL_INTERVAL = 0.65
-local LOOP_INTERVAL = 5 -- How many seconds to wait between automatic cycles
+local LOOP_INTERVAL = 5 
 local isAutoFarming = false
 
 local harvestPlants = {}
@@ -40,7 +40,7 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(250, 235)
+frame.Size = UDim2.fromOffset(220, 215)
 frame.Position = UDim2.fromScale(0.02, 0.25)
 frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 frame.BorderSizePixel = 0
@@ -61,8 +61,8 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Admin Panel v19"
-title.TextSize = 16
+title.Text = "Auto-Farm v20"
+title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Parent = titleBar
@@ -95,41 +95,54 @@ content.Position = UDim2.fromOffset(0, 30)
 content.Size = UDim2.new(1, 0, 1, -30)
 content.Parent = frame
 
-local state = Instance.new("TextLabel")
-state.Size = UDim2.new(1, 0, 0, 25)
-state.BackgroundTransparency = 1
-state.Font = Enum.Font.Gotham
-state.Text = "State: Idle"
-state.TextSize = 14
-state.TextColor3 = Color3.fromRGB(220, 220, 220)
-state.Parent = content
+local autoToggleBtn = Instance.new("TextButton")
+autoToggleBtn.Size = UDim2.new(1, -20, 0, 35)
+autoToggleBtn.Position = UDim2.new(0, 10, 0, 10)
+autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+autoToggleBtn.Text = "Auto-Farm: OFF"
+autoToggleBtn.Font = Enum.Font.GothamBold
+autoToggleBtn.TextSize = 14
+autoToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+autoToggleBtn.Parent = content
+Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
 
-local function createButton(text, y, color)
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(1, -20, 0, 40)
-    button.Position = UDim2.new(0, 10, 0, y)
-    button.BackgroundColor3 = color or Color3.fromRGB(60, 60, 60)
-    button.Text = text
-    button.Font = Enum.Font.GothamBold
-    button.TextSize = 15
-    button.TextColor3 = Color3.new(1, 1, 1)
-    button.Parent = content
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
-    return button
+local function createStatusLabel(yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 0, 20)
+    lbl.Position = UDim2.new(0, 12, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = content
+    return lbl
 end
 
--- Swapped Scan for an Auto-Toggle
-local autoToggleBtn = createButton("Auto-Farm: OFF", 35, Color3.fromRGB(170, 50, 50))
-local shovelButton = createButton("Manual Shovel", 85)
-local harvestButton = createButton("Manual Harvest", 135)
+-- Individual UI Labels
+local stateLbl = createStatusLabel(55)
+local harvestLbl = createStatusLabel(80)
+local shovelLbl = createStatusLabel(105)
+local keptLbl = createStatusLabel(130)
+
+stateLbl.Text = "Status: Idle"
+harvestLbl.Text = "🌿 Harvest Targets: 0"
+shovelLbl.Text = "🪓 Shovel Targets: 0"
+keptLbl.Text = "🛡️ Kept Plants: 0"
 
 local function setState(text)
-    state.Text = "State: " .. text
+    stateLbl.Text = "Status: " .. text
+end
+
+local function updateCounts()
+    harvestLbl.Text = "🌿 Harvest Targets: " .. #harvestPlants
+    shovelLbl.Text = "🪓 Shovel Targets: " .. #shovelPlants
+    keptLbl.Text = "🛡️ Kept Plants: " .. #keptPlants
 end
 
 -- 4. Core Logic Functions
 local function scanPlants()
-    setState("Scanning...")
+    setState("Scanning plot...")
     table.clear(harvestPlants)
     table.clear(keptPlants)
     table.clear(shovelPlants)
@@ -145,9 +158,7 @@ local function scanPlants()
                     local name = fruit:GetAttribute("CorePartName")
                     local id = fruit:GetAttribute("FruitId")
 
-                    if not id or not name then
-                        continue
-                    end
+                    if not id or not name then continue end
 
                     local mutation = fruit:GetAttribute("Mutation")
                     if not mutation or mutation == "" then
@@ -169,7 +180,6 @@ local function scanPlants()
                         Instance = fruit,
                     }
 
-                    -- NEW LOGIC APPLIED HERE
                     if weight < 35 then
                         table.insert(harvestPlants, fruitData)
                     elseif weight < 60 then
@@ -182,7 +192,7 @@ local function scanPlants()
         end
     end
 
-    setState(("Scan: S:%d | H:%d | K:%d"):format(#shovelPlants, #harvestPlants, #keptPlants))
+    updateCounts()
 end
 
 local function harvestFruit(fruitInstance)
@@ -202,7 +212,6 @@ local function startHarvest()
 
     local processed = 0
     for _, fruit in ipairs(harvestPlants) do
-        -- Check if it still exists before harvesting
         if fruit.Instance and fruit.Instance:IsDescendantOf(workspace) then
             processed += 1
             setState(("Harvesting... %d/%d"):format(processed, total))
@@ -254,7 +263,7 @@ local function startShovel(toolName)
     if #shovelPlants == 0 then return end
 
     if not equipTool(toolName) then
-        setState("Failed: Tool missing!")
+        setState("Failed: Shovel missing!")
         warn("Failed to equip shovel!")
         return
     end
@@ -264,7 +273,6 @@ local function startShovel(toolName)
     local nextAllowedTime = os.clock()
 
     for _, fruit in ipairs(shovelPlants) do
-        -- Check if it still exists before shoveling
         if fruit.Instance and fruit.Instance:IsDescendantOf(workspace) then
             local now = os.clock()
             if now < nextAllowedTime then
@@ -280,60 +288,50 @@ local function startShovel(toolName)
     end
 end
 
--- 5. Auto-Loop Execution
 task.spawn(function()
     while true do
         if isAutoFarming then
             scanPlants()
             
+            -- Trigger Harvest in a separate thread
             if #harvestPlants > 0 and isAutoFarming then
-                startHarvest()
+                task.spawn(function()
+                    startHarvest()
+                end)
             end
             
+            -- Wait 1 second before starting Shovel, as requested
+            if isAutoFarming then
+                task.wait(1) 
+            end
+            
+            -- Trigger Shovel in a separate thread
             if #shovelPlants > 0 and isAutoFarming then
-                startShovel(SHOVEL_NAME)
+                task.spawn(function()
+                    startShovel(SHOVEL_NAME)
+                end)
             end
             
             if isAutoFarming then
-                setState("Auto: Waiting for next cycle...")
+                setState("Processes running in background...")
             end
         end
         task.wait(LOOP_INTERVAL)
     end
 end)
 
--- 6. Wiring the UI Buttons
+-- 6. Wiring the UI Button
 autoToggleBtn.MouseButton1Click:Connect(function()
     isAutoFarming = not isAutoFarming
     if isAutoFarming then
         autoToggleBtn.Text = "Auto-Farm: ON"
         autoToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setState("Auto-Farm Started")
+        setState("Starting routine...")
     else
         autoToggleBtn.Text = "Auto-Farm: OFF"
         autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
-        setState("Auto-Farm Paused")
+        setState("Idle (Paused)")
     end
-end)
-
-shovelButton.MouseButton1Click:Connect(function()
-    if isAutoFarming then
-        setState("Disable Auto to use manual!")
-        return
-    end
-    scanPlants()
-    startShovel(SHOVEL_NAME)
-    setState("Manual Shovel Complete")
-end)
-
-harvestButton.MouseButton1Click:Connect(function()
-    if isAutoFarming then
-        setState("Disable Auto to use manual!")
-        return
-    end
-    scanPlants()
-    startHarvest()
-    setState("Manual Harvest Complete")
 end)
 
 -- Minimize/Close Logic
@@ -354,6 +352,6 @@ minimize.MouseButton1Click:Connect(function()
 end)
 
 close.MouseButton1Click:Connect(function()
-    isAutoFarming = false -- Stop loop if UI closes
+    isAutoFarming = false 
     screenGui:Destroy()
 end)
