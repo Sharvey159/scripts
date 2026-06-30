@@ -65,7 +65,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v21"
+title.Text = "Auto-Farm v22"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -130,18 +130,18 @@ local shovelLbl = createStatusLabel(105)
 local keptLbl = createStatusLabel(130)
 
 stateLbl.Text = "Status: Idle"
-harvestLbl.Text = "🌿 Harvest Targets: 0"
-shovelLbl.Text = "🪓 Shovel Targets: 0"
-keptLbl.Text = "🛡️ Kept Plants: 0"
+harvestLbl.Text = "🌿 Harvest State: 0"
+shovelLbl.Text = "🪓 Shovel State: 0"
+keptLbl.Text = "🛡️ Kept Plant: 0"
 
 local function setState(text)
     stateLbl.Text = "Status: " .. text
 end
 
 local function updateCounts()
-    harvestLbl.Text = "🌿 Harvest Targets: " .. #harvestPlants
-    shovelLbl.Text = "🪓 Shovel Targets: " .. #shovelPlants
-    keptLbl.Text = "🛡️ Kept Plants: " .. #keptPlants
+    harvestLbl.Text = "🌿 Harvest State: " .. #harvestPlants
+    shovelLbl.Text = "🪓 Shovel State: " .. #shovelPlants
+    keptLbl.Text = "🛡️ Kept Plant: " .. #keptPlants
 end
 
 -- 4. Core Logic Functions
@@ -223,7 +223,11 @@ local function startHarvest()
         
         if fruit.Instance and fruit.Instance:IsDescendantOf(workspace) then
             processed += 1
-            setState(("Harvesting... %d/%d"):format(processed, total))
+            
+            -- Update specific state label visually
+            harvestLbl.Text = ("🌿 Harvest State: Active (%d/%d)"):format(processed, total)
+            setState("Harvesting...")
+            
             harvestFruit(fruit.Instance)
             task.wait(0.1)
         end
@@ -297,7 +301,11 @@ local function startShovel(toolName)
             nextAllowedTime = os.clock() + SHOVEL_INTERVAL
 
             processed += 1
-            setState(("Shoveling... %d/%d"):format(processed, total))
+            
+            -- Update specific state label visually
+            shovelLbl.Text = ("🪓 Shovel State: Active (%d/%d)"):format(processed, total)
+            setState("Shoveling...")
+            
             shovelFruit(fruit.Instance)
         end
     end
