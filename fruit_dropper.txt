@@ -185,11 +185,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-<<<<<<< HEAD
 mkLabel(hdr, "🎒 ALT PICKER V7", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
-=======
-mkLabel(hdr, "🎒 ALT PICKER V6", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
->>>>>>> 886c9bbb6eddd17cb1c0b8b7560d3cfd16246753
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -560,7 +556,6 @@ local function doScan(favouriteFilter, btn, label)
 			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
 				if fav == favouriteFilter then
 					table.insert(fruits, {
-<<<<<<< HEAD
 						id = item:GetAttribute("Id"),
 						name = item:GetAttribute("FruitName") or item.Name,
 						mutation = item:GetAttribute("Mutation") or "",
@@ -568,15 +563,6 @@ local function doScan(favouriteFilter, btn, label)
 						favorite = fav,
 						value = 0,
 						tierIdx = nil,
-=======
- 					   id = item:GetAttribute("Id"),
- 					   name = item:GetAttribute("FruitName") or item.Name,
- 					   mutation = item:GetAttribute("Mutation") or "",
-  					   kg = item:GetAttribute("Weight") or 0,
-  					   favorite = fav,
-    				   value = 0,
-    				   tierIdx = nil,
->>>>>>> 886c9bbb6eddd17cb1c0b8b7560d3cfd16246753
 					})
 				end
 			end
