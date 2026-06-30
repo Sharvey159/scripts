@@ -28,6 +28,10 @@ local SHOVEL_INTERVAL = 0.65
 local LOOP_INTERVAL = 5 
 local isAutoFarming = false
 
+-- State Locks to prevent overlapping scans
+local isHarvesting = false
+local isShoveling = false
+
 local harvestPlants = {}
 local keptPlants = {}
 local shovelPlants = {}
@@ -61,7 +65,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v20"
+title.Text = "Auto-Farm v21"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -209,9 +213,14 @@ end
 local function startHarvest()
     local total = #harvestPlants
     if total == 0 then return end
-
+    
+    isHarvesting = true -- Lock state
     local processed = 0
+    
     for _, fruit in ipairs(harvestPlants) do
+        -- Safety check: Break loop if user turns off Auto-Farm
+        if not isAutoFarming then break end 
+        
         if fruit.Instance and fruit.Instance:IsDescendantOf(workspace) then
             processed += 1
             setState(("Harvesting... %d/%d"):format(processed, total))
@@ -219,6 +228,8 @@ local function startHarvest()
             task.wait(0.1)
         end
     end
+    
+    isHarvesting = false -- Unlock state
 end
 
 local function equipTool(toolName)
@@ -268,11 +279,15 @@ local function startShovel(toolName)
         return
     end
 
+    isShoveling = true -- Lock state
     local total = #shovelPlants
     local processed = 0
     local nextAllowedTime = os.clock()
 
     for _, fruit in ipairs(shovelPlants) do
+        -- Safety check: Break loop if user turns off Auto-Farm
+        if not isAutoFarming then break end 
+        
         if fruit.Instance and fruit.Instance:IsDescendantOf(workspace) then
             local now = os.clock()
             if now < nextAllowedTime then
@@ -286,34 +301,43 @@ local function startShovel(toolName)
             shovelFruit(fruit.Instance)
         end
     end
+    
+    isShoveling = false -- Unlock state
 end
 
+-- 5. Thread-Safe Auto-Loop Execution
 task.spawn(function()
     while true do
         if isAutoFarming then
-            scanPlants()
-            
-            -- Trigger Harvest in a separate thread
-            if #harvestPlants > 0 and isAutoFarming then
-                task.spawn(function()
-                    startHarvest()
-                end)
-            end
-            
-            -- Wait 1 second before starting Shovel, as requested
-            if isAutoFarming then
-                task.wait(1) 
-            end
-            
-            -- Trigger Shovel in a separate thread
-            if #shovelPlants > 0 and isAutoFarming then
-                task.spawn(function()
-                    startShovel(SHOVEL_NAME)
-                end)
-            end
-            
-            if isAutoFarming then
-                setState("Processes running in background...")
+            -- ONLY scan and trigger if previous tasks have finished
+            if not isHarvesting and not isShoveling then
+                scanPlants()
+                
+                -- Trigger Harvest in a separate thread
+                if #harvestPlants > 0 and isAutoFarming then
+                    task.spawn(function()
+                        startHarvest()
+                    end)
+                end
+                
+                -- Wait 1 second before starting Shovel, as requested
+                if isAutoFarming then
+                    task.wait(1) 
+                end
+                
+                -- Trigger Shovel in a separate thread
+                if #shovelPlants > 0 and isAutoFarming then
+                    task.spawn(function()
+                        startShovel(SHOVEL_NAME)
+                    end)
+                end
+                
+                if isAutoFarming then
+                    setState("Processes running in background...")
+                end
+            else
+                -- If it takes longer than LOOP_INTERVAL, we just wait here
+                setState("Yielding: Tasks still running...")
             end
         end
         task.wait(LOOP_INTERVAL)
