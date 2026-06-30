@@ -15,6 +15,7 @@ local CoreGui = game:GetService("CoreGui")
 local RS = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 local Networking = require(RS.SharedModules.Networking)
+local FruitVisualizerController = require(player:WaitForChild("PlayerScripts"):WaitForChild("Controllers"):WaitForChild("FruitVisualizerController"))
 
 -- =====================
 -- WEBHOOK
@@ -182,7 +183,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "🎒 ALT PICKER V3", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+mkLabel(hdr, "🎒 ALT PICKER V4", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -552,11 +553,19 @@ local function doScan(favouriteFilter, btn, label)
 			local fav = item:GetAttribute("IsFavorite") or false
 			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
 				if fav == favouriteFilter then
+					
+					-- 1. Grab the weight exactly like the garden scanner
+					local weight = FruitVisualizerController:CalculateFruitWeight(item)
+					if not weight and FruitVisualizerController.CalculatePlantWeight then
+						weight = FruitVisualizerController:CalculatePlantWeight(item)
+					end
+					local actualWeight = tonumber(weight) or 0
+
 					table.insert(fruits, {
 						id = item:GetAttribute("Id"),
 						name = item:GetAttribute("FruitName") or item.Name,
 						mutation = item:GetAttribute("Mutation") or "",
-						kg = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
+						kg = actualWeight, -- 2. Replaced the old formula with actualWeight
 						favorite = fav,
 						value = 0,
 						tierIdx = nil,
