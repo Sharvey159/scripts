@@ -980,19 +980,24 @@ webhookBtn.MouseButton1Click:Connect(function()
 	end
 	webhookBtn.Text = "Sending..."
 
-	local lines = {}
 	local total = 0
 	local tierTotals = {}
 	local tierCounts = {}
+	local tierLines = {}
 
 	for _, e in ipairs(backpackFruits) do
-		total = total + e.value
-		local tierLabel = e.tierIdx and TIERS[e.tierIdx].label or "?"
+		total += e.value
+
+		local tierLabel = e.tierIdx and TIERS[e.tierIdx].label or "Unknown"
+
 		tierTotals[tierLabel] = (tierTotals[tierLabel] or 0) + e.value
 		tierCounts[tierLabel] = (tierCounts[tierLabel] or 0) + 1
+		tierLines[tierLabel] = tierLines[tierLabel] or {}
+
 		local fav = e.favorite and "★ " or ""
+
 		table.insert(
-			lines,
+			tierLines[tierLabel],
 			string.format(
 				"%s%s [%s] %.1fkg — %s",
 				fav,
@@ -1005,32 +1010,45 @@ webhookBtn.MouseButton1Click:Connect(function()
 	end
 
 	local breakdown = {}
+
 	for _, t in ipairs(TIERS) do
 		if tierCounts[t.label] then
 			table.insert(
 				breakdown,
-				string.format("%s: %dx · %s", t.label, tierCounts[t.label], formatVal(tierTotals[t.label]))
+				string.format(
+					"%s: %dx · %s",
+					t.label,
+					tierCounts[t.label],
+					formatVal(tierTotals[t.label])
+				)
 			)
 		end
 	end
 
-	local modeTag = currentScanMode == "locked" and "Locked" or "Delivery"
-	local footer = "\n━━━━━━━━━━━━━━━━━━━━━━\n"
-		.. string.format("**ALT %s: %d fruits · %s**", modeTag, #backpackFruits, formatVal(total))
+	local footer =
+		"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+		.. string.format(
+			"**Player:** %s\n**ALT %s:** %d fruits · %s",
+			lp.Name,
+			currentScanMode == "locked" and "Locked" or "Delivery",
+			#backpackFruits,
+			formatVal(total)
+		)
 		.. "\n"
 		.. table.concat(breakdown, " · ")
 
-	local CHUNK = 3800
-	local chunk = ""
-	local part = 1
-	for _, line in ipairs(lines) do
-		if #chunk + #line + 1 > CHUNK then
-			sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk, 3447003)
-			chunk = ""
-			part = part + 1
+	for _, tier in ipairs(TIERS) do
+		local lines = tierLines[tier.label]
+
+		if lines then
+			sendWebhook(
+				string.format("🎒 %s (%s)", tier.label, currentScanMode == "locked" and "Locked" or "Delivery"),
+				table.concat(lines, "\n") .. footer,
+				3447003
+			)
+
 			task.wait(0.5)
 		end
-		chunk = chunk .. line .. "\n"
 	end
 	sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk .. footer, 3447003)
 	webhookBtn.Text = "✓ Sent"
