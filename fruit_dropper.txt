@@ -1,0 +1,1118 @@
+-- ============================================================
+-- GAG2 Alt Picker
+-- - Auto pickup loop (DroppedItems proximity prompt)
+-- - Backpack scan with live bid prices (delivery / locked split)
+-- - Webhook send
+-- - Drop by Value (delivery mode)
+-- ============================================================
+if game:GetService("CoreGui"):FindFirstChild("GAG_AltPicker") then
+	game:GetService("CoreGui").GAG_AltPicker:Destroy()
+end
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local RS = game:GetService("ReplicatedStorage")
+local lp = Players.LocalPlayer
+local Networking = require(RS.SharedModules.Networking)
+
+-- =====================
+-- WEBHOOK
+-- =====================
+local WEBHOOK_URL =
+	"https://discord.com/api/webhooks/1520692534135750778/x3d9XAM0Zp8j2MwB6D1EqYumKfZYAYjMaEIQnw2zArT2jtY7EN0Mdp6ZsvgQIpj7VOPh"
+
+local function sendWebhook(title, body, color)
+	task.spawn(function()
+		pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = game:GetService("HttpService"):JSONEncode({
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 3447003,
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+						},
+					},
+				}),
+			})
+		end)
+	end)
+end
+
+-- =====================
+-- COLORS
+-- =====================
+local C = {
+	bg = Color3.fromRGB(14, 14, 20),
+	panel = Color3.fromRGB(20, 20, 28),
+	border = Color3.fromRGB(42, 42, 58),
+	accent = Color3.fromRGB(90, 210, 130),
+	accentDim = Color3.fromRGB(30, 65, 45),
+	text = Color3.fromRGB(215, 215, 228),
+	muted = Color3.fromRGB(100, 100, 120),
+	header = Color3.fromRGB(18, 18, 26),
+	danger = Color3.fromRGB(220, 80, 80),
+	dangerDim = Color3.fromRGB(70, 25, 25),
+	gold = Color3.fromRGB(255, 195, 55),
+	locked = Color3.fromRGB(255, 165, 0),
+	lockedDim = Color3.fromRGB(70, 45, 0),
+}
+
+local TIER_COLORS = {
+	Color3.fromRGB(160, 160, 170),
+	Color3.fromRGB(100, 200, 100),
+	Color3.fromRGB(80, 140, 255),
+	Color3.fromRGB(255, 180, 40),
+	Color3.fromRGB(180, 100, 255),
+	Color3.fromRGB(255, 60, 60),
+}
+
+local TIERS = {
+	{ label = "1-3M", min = 1, max = 3 },
+	{ label = "3-5M", min = 3, max = 5 },
+	{ label = "5-10M", min = 5, max = 10 },
+	{ label = "10-15M", min = 10, max = 15 },
+	{ label = "15-20M", min = 15, max = 20 },
+	{ label = "20M+", min = 20, max = 9999 },
+}
+
+local MUT_COLORS = {
+	Electric = Color3.fromRGB(255, 230, 80),
+	Gold = Color3.fromRGB(255, 200, 40),
+	Rainbow = Color3.fromRGB(255, 120, 220),
+	Frozen = Color3.fromRGB(120, 200, 255),
+	Bloodlit = Color3.fromRGB(200, 40, 60),
+	Starstruck = Color3.fromRGB(180, 180, 240),
+	Aurora = Color3.fromRGB(130, 220, 255),
+}
+
+local function formatVal(m)
+	if m >= 1000 then
+		return string.format("%.1fB", m / 1000)
+	elseif m >= 1 then
+		return string.format("%.2fM", m)
+	elseif m >= 0.001 then
+		return string.format("%.1fK", m * 1000)
+	else
+		return "—"
+	end
+end
+
+local function getTierIndex(val)
+	for i, t in ipairs(TIERS) do
+		if val >= t.min and val < t.max then
+			return i
+		end
+	end
+	return nil
+end
+
+-- =====================
+-- UI
+-- =====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "GAG_AltPicker"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+
+local WIN_W, WIN_H = 340, 540
+
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.new(0, WIN_W, 0, WIN_H)
+main.Position = UDim2.new(1, -360, 0.5, -270)
+main.BackgroundColor3 = C.bg
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.ClipsDescendants = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+local ms = Instance.new("UIStroke", main)
+ms.Color = C.border
+ms.Thickness = 1
+
+local function mkFrame(parent, size, pos, color, radius)
+	local f = Instance.new("Frame", parent)
+	f.Size = size
+	f.Position = pos
+	f.BackgroundColor3 = color or C.panel
+	f.BorderSizePixel = 0
+	if radius then
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, radius)
+	end
+	return f
+end
+
+local function mkLabel(parent, text, size, pos, color, fs, bold)
+	local l = Instance.new("TextLabel", parent)
+	l.BackgroundTransparency = 1
+	l.Size = size
+	l.Position = pos
+	l.Text = text
+	l.TextColor3 = color or C.text
+	l.TextSize = fs or 10
+	l.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	return l
+end
+
+local function mkBtn(parent, text, size, pos, bg, fg, cb)
+	local b = Instance.new("TextButton", parent)
+	b.Size = size
+	b.Position = pos
+	b.BackgroundColor3 = bg
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = fg
+	b.TextSize = 10
+	b.Font = Enum.Font.GothamBold
+	b.AutoButtonColor = false
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+	if cb then
+		b.MouseButton1Click:Connect(cb)
+	end
+	return b
+end
+
+-- Header
+local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
+mkLabel(hdr, "🎒 ALT PICKER V5", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+local minimised = false
+local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
+	minimised = not minimised
+	main.Size = minimised and UDim2.new(0, WIN_W, 0, 32) or UDim2.new(0, WIN_W, 0, WIN_H)
+	minBtn.Text = minimised and "□" or "—"
+end)
+mkBtn(hdr, "✕", UDim2.new(0, 24, 0, 20), UDim2.new(1, -28, 0.5, -10), C.dangerDim, C.danger, function()
+	gui:Destroy()
+end)
+
+-- Status bar
+local statusLbl = mkLabel(main, "Pickup: OFF", UDim2.new(1, -16, 0, 13), UDim2.new(0, 8, 0, 36), C.muted, 9)
+
+-- Row 1: pickup
+local pickupBtn =
+	mkBtn(main, "▶ Start Pickup", UDim2.new(1, -16, 0, 20), UDim2.new(0, 8, 0, 52), C.accentDim, C.accent, nil)
+
+-- Row 2: scan delivery | scan locked
+local scanDeliveryBtn =
+	mkBtn(main, "🔍 Scan Delivery", UDim2.new(0.5, -4, 0, 20), UDim2.new(0, 8, 0, 76), C.panel, C.muted, nil)
+local scanLockedBtn =
+	mkBtn(main, "🔒 Scan Locked", UDim2.new(0.5, -4, 0, 20), UDim2.new(0.5, 4, 0, 76), C.lockedDim, C.locked, nil)
+
+-- Row 3: webhook
+local webhookBtn = mkBtn(
+	main,
+	"📤 Send to Discord",
+	UDim2.new(1, -16, 0, 20),
+	UDim2.new(0, 8, 0, 100),
+	Color3.fromRGB(60, 40, 100),
+	C.accent,
+	nil
+)
+
+-- Row 4: Drop by Value
+local dropValFrame = mkFrame(main, UDim2.new(0.35, -4, 0, 20), UDim2.new(0, 8, 0, 124), C.panel, 4)
+Instance.new("UIStroke", dropValFrame).Color = C.border
+mkLabel(dropValFrame, "Target M:", UDim2.new(0, 36, 1, 0), UDim2.new(0, 2, 0, 0), C.muted, 8)
+local dropValInput = Instance.new("TextBox", dropValFrame)
+dropValInput.Size = UDim2.new(1, -40, 1, 0)
+dropValInput.Position = UDim2.new(0, 38, 0, 0)
+dropValInput.BackgroundTransparency = 1
+dropValInput.Text = "300"
+dropValInput.TextColor3 = C.gold
+dropValInput.TextSize = 9
+dropValInput.Font = Enum.Font.GothamBold
+dropValInput.ClearTextOnFocus = false
+dropValInput.PlaceholderText = "300"
+dropValInput.PlaceholderColor3 = C.muted
+
+local dropValBtn = mkBtn(
+	main,
+	"🎯 Drop by Value",
+	UDim2.new(0.65, -8, 0, 20),
+	UDim2.new(0.35, 4, 0, 124),
+	Color3.fromRGB(60, 35, 90),
+	Color3.fromRGB(180, 120, 255),
+	nil
+)
+
+local dropValStatusLbl = mkLabel(main, "", UDim2.new(1, -16, 0, 12), UDim2.new(0, 8, 0, 148), C.muted, 9)
+
+-- Summary
+local summaryLbl = mkLabel(main, "", UDim2.new(1, -16, 0, 13), UDim2.new(0, 8, 0, 163), C.muted, 9)
+
+-- Scroll
+local scroll = Instance.new("ScrollingFrame", main)
+scroll.Size = UDim2.new(1, -16, 0, WIN_H - 180)
+scroll.Position = UDim2.new(0, 8, 0, 178)
+scroll.BackgroundColor3 = C.panel
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.ScrollBarImageColor3 = C.border
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Instance.new("UICorner", scroll).CornerRadius = UDim.new(0, 6)
+local lay = Instance.new("UIListLayout", scroll)
+lay.Padding = UDim.new(0, 2)
+lay.SortOrder = Enum.SortOrder.LayoutOrder
+local sPad = Instance.new("UIPadding", scroll)
+sPad.PaddingLeft = UDim.new(0, 4)
+sPad.PaddingRight = UDim.new(0, 4)
+sPad.PaddingTop = UDim.new(0, 4)
+sPad.PaddingBottom = UDim.new(0, 4)
+
+-- =====================
+-- BACKPACK DATA
+-- =====================
+local backpackFruits = {} -- currently displayed list (delivery or locked)
+local currentScanMode = "delivery" -- "delivery" | "locked"
+
+-- =====================
+-- PICKUP LOOP
+-- =====================
+local picking = false
+
+pickupBtn.MouseButton1Click:Connect(function()
+	picking = not picking
+	if picking then
+		pickupBtn.Text = "⛔ Stop Pickup"
+		pickupBtn.BackgroundColor3 = C.dangerDim
+		pickupBtn.TextColor3 = C.danger
+		statusLbl.Text = "Pickup: ON — watching..."
+		statusLbl.TextColor3 = C.accent
+
+		task.spawn(function()
+			local DroppedItems = workspace:WaitForChild("DroppedItems")
+			while picking do
+				for _, item in ipairs(DroppedItems:GetChildren()) do
+					if not picking then
+						break
+					end
+					local anchor = item:FindFirstChild("PromptAnchor")
+					if anchor and item:GetAttribute("ItemCategory") == "HarvestedFruits" then
+						local prompt = anchor:FindFirstChild("PickupPrompt")
+						if prompt and prompt:IsA("ProximityPrompt") then
+							local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+							if hrp and item:IsA("Model") and item.PrimaryPart then
+								hrp.CFrame = item.PrimaryPart.CFrame + Vector3.new(0, 3, 0)
+							elseif hrp then
+								for _, part in ipairs(item:GetDescendants()) do
+									if part:IsA("BasePart") then
+										hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+										break
+									end
+								end
+							end
+							task.wait(0.1)
+							pcall(function()
+								fireproximityprompt(prompt)
+							end)
+							task.wait(0.3)
+						end
+					end
+				end
+				task.wait(0.5)
+			end
+		end)
+	else
+		picking = false
+		pickupBtn.Text = "▶ Start Pickup"
+		pickupBtn.BackgroundColor3 = C.accentDim
+		pickupBtn.TextColor3 = C.accent
+		statusLbl.Text = "Pickup: OFF"
+		statusLbl.TextColor3 = C.muted
+	end
+end)
+
+-- =====================
+-- SCROLL / ROW
+-- =====================
+local function clearScroll()
+	for _, c in ipairs(scroll:GetChildren()) do
+		if c:IsA("Frame") or c:IsA("TextLabel") or c:IsA("TextButton") then
+			c:Destroy()
+		end
+	end
+end
+
+local function makeRow(entry, order)
+	local baseBg = Color3.fromRGB(24, 24, 34)
+	local row = Instance.new("TextButton", scroll)
+	row.Size = UDim2.new(1, 0, 0, 28)
+	row.BackgroundColor3 = baseBg
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.LayoutOrder = order
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+
+	if entry.favorite then
+		mkLabel(row, "★", UDim2.new(0, 12, 1, 0), UDim2.new(0, 2, 0, 0), C.gold, 9, true)
+	end
+
+	local wb = mkFrame(row, UDim2.new(0, 46, 0, 18), UDim2.new(0, 16, 0.5, -9), Color3.fromRGB(28, 28, 40), 3)
+	local wl = mkLabel(
+		wb,
+		string.format("%.1f", entry.kg) .. "kg",
+		UDim2.new(1, 0, 1, 0),
+		UDim2.new(0, 0, 0, 0),
+		C.gold,
+		9,
+		true
+	)
+	wl.TextXAlignment = Enum.TextXAlignment.Center
+
+	mkLabel(row, entry.name, UDim2.new(0, 100, 1, 0), UDim2.new(0, 66, 0, 0), C.text, 9)
+
+	if entry.mutation ~= "" then
+		local mc = MUT_COLORS[entry.mutation] or C.muted
+		local mb = mkFrame(row, UDim2.new(0, 64, 0, 16), UDim2.new(1, -150, 0.5, -8), Color3.fromRGB(20, 20, 28), 3)
+		local mbs = Instance.new("UIStroke", mb)
+		mbs.Color = mc
+		mbs.Thickness = 1
+		local ml = mkLabel(mb, entry.mutation, UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), mc, 8, true)
+		ml.TextXAlignment = Enum.TextXAlignment.Center
+	end
+
+	local tc = entry.tierIdx and TIER_COLORS[entry.tierIdx] or C.muted
+	local vl = mkLabel(row, formatVal(entry.value), UDim2.new(0, 76, 1, 0), UDim2.new(1, -80, 0, 0), tc, 9, true)
+	vl.TextXAlignment = Enum.TextXAlignment.Right
+
+	local clicking = false
+	row.MouseButton1Click:Connect(function()
+		if clicking then
+			return
+		end
+		clicking = true
+		row.BackgroundColor3 = Color3.fromRGB(200, 160, 60)
+		local bp = lp:FindFirstChildOfClass("Backpack")
+		Networking.Backpack.PromoteFruit:Fire(entry.id)
+		local tool = nil
+		local startT = tick()
+		while tick() - startT < 3 do
+			task.wait(0.05)
+			if bp then
+				for _, item in ipairs(bp:GetChildren()) do
+					if
+						item:IsA("Tool")
+						and item:GetAttribute("Id") == entry.id
+						and not item:GetAttribute("FruitProxy")
+					then
+						tool = item
+						break
+					end
+				end
+			end
+			if tool then
+				break
+			end
+		end
+		if tool then
+			local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:EquipTool(tool)
+			end
+			row.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+		else
+			row.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+		end
+		task.wait(0.4)
+		row.BackgroundColor3 = baseBg
+		clicking = false
+	end)
+
+	return row
+end
+
+local function renderList()
+	clearScroll()
+	local totalVal = 0
+	for _, e in ipairs(backpackFruits) do
+		totalVal = totalVal + e.value
+	end
+	local modeLabel = currentScanMode == "locked" and "🔒 Locked" or "📦 Delivery"
+	summaryLbl.Text =
+		string.format("%s: %d fruits · ~%s · tap to equip", modeLabel, #backpackFruits, formatVal(totalVal))
+	for i, entry in ipairs(backpackFruits) do
+		makeRow(entry, i).Parent = scroll
+	end
+	if #backpackFruits == 0 then
+		local el = Instance.new("TextLabel", scroll)
+		el.BackgroundTransparency = 1
+		el.Size = UDim2.new(1, 0, 0, 30)
+		el.Text = "Nothing here"
+		el.TextColor3 = C.muted
+		el.TextSize = 9
+		el.Font = Enum.Font.GothamMedium
+		el.TextXAlignment = Enum.TextXAlignment.Center
+	end
+end
+
+-- =====================
+-- BACKPACK WATCH
+-- =====================
+local backpackWatchConn = nil
+local addedWatchConn = nil
+
+local function startBackpackWatch()
+	if backpackWatchConn then
+		pcall(function()
+			backpackWatchConn:Disconnect()
+		end)
+	end
+	if addedWatchConn then
+		pcall(function()
+			addedWatchConn:Disconnect()
+		end)
+	end
+	local bp = lp:FindFirstChildOfClass("Backpack")
+	if not bp then
+		return
+	end
+
+	backpackWatchConn = bp.ChildRemoved:Connect(function(item)
+		local id = item:GetAttribute("Id")
+		if not id then
+			return
+		end
+		task.wait(0.2)
+		for _, c in ipairs(bp:GetChildren()) do
+			if c:GetAttribute("Id") == id then
+				return
+			end
+		end
+		local char = lp.Character
+		if char then
+			for _, c in ipairs(char:GetChildren()) do
+				if c:GetAttribute("Id") == id then
+					return
+				end
+			end
+		end
+		for i, entry in ipairs(backpackFruits) do
+			if entry.id == id then
+				table.remove(backpackFruits, i)
+				renderList()
+				break
+			end
+		end
+	end)
+
+	addedWatchConn = bp.ChildAdded:Connect(function(item)
+		if item:GetAttribute("HarvestedFruit") then
+			scanDeliveryBtn.Text = "⚠️ Rescan"
+			scanDeliveryBtn.TextColor3 = C.danger
+		end
+	end)
+end
+
+-- =====================
+-- SCAN HELPER
+-- =====================
+local function doScan(favouriteFilter, btn, label)
+	btn.Text = "Scanning..."
+	btn.TextColor3 = C.muted
+	btn.Active = false
+
+	local bp = lp:FindFirstChildOfClass("Backpack")
+	local char = lp.Character
+	local fruits = {}
+	local containers = {}
+
+	local FruitStockMultipliers = {}
+
+	local success, snapshot = pcall(function()
+		return Networking.FruitStock.Request:Fire()
+	end)
+
+	if success and snapshot and snapshot.entries then
+		table.clear(FruitStockMultipliers)
+
+		for fruitName, info in pairs(snapshot.entries) do
+			FruitStockMultipliers[fruitName] = info.multiplier or 1
+		end
+	end
+
+	if bp then
+		table.insert(containers, bp)
+	end
+	if char then
+		table.insert(containers, char)
+	end
+
+	for _, container in ipairs(containers) do
+		for _, item in ipairs(container:GetChildren()) do
+			local fav = item:GetAttribute("IsFavorite") or false
+			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
+				if fav == favouriteFilter then
+					table.insert(fruits, {
+						id = item:GetAttribute("Id"),
+						name = item:GetAttribute("FruitName") or item.Name,
+						mutation = item:GetAttribute("Mutation") or "",
+						kg = 7.4826 * (item:GetAttribute("SizeMultiplier") or 0),
+						favorite = fav,
+						value = 0,
+						tierIdx = nil,
+					})
+				end
+			end
+		end
+	end
+
+	local total = #fruits
+	local SCAN_INTERVAL = 0.1
+	local nextTime = os.clock()
+
+	for i, entry in ipairs(fruits) do
+		-- hard timing gate (FPS-proof)
+		local now = os.clock()
+		if now < nextTime then
+			task.wait(nextTime - now)
+		end
+		nextTime = os.clock() + SCAN_INTERVAL
+
+		btn.Text = string.format("Scanning %d/%d...", i, total)
+
+		local ok, result = pcall(function()
+			return Networking.NPCS.GetFruitBid:Fire(entry.id)
+		end)
+
+		if ok and result then
+			local currentValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+
+			local multiplier = FruitStockMultipliers[entry.name] or 1
+			entry.value = currentValue / multiplier
+		end
+
+		entry.tierIdx = getTierIndex(entry.value or 0)
+	end
+	table.sort(fruits, function(a, b)
+		return a.value > b.value
+	end)
+	backpackFruits = fruits
+	btn.Text = label
+	btn.TextColor3 = favouriteFilter and C.locked or C.muted
+	btn.Active = true
+	startBackpackWatch()
+	renderList()
+end
+
+-- =====================
+-- SCAN BUTTONS
+-- =====================
+scanDeliveryBtn.MouseButton1Click:Connect(function()
+	currentScanMode = "delivery"
+	-- Reset locked button appearance
+	scanLockedBtn.BackgroundColor3 = C.lockedDim
+	scanLockedBtn.TextColor3 = C.locked
+	doScan(false, scanDeliveryBtn, "🔍 Scan Delivery")
+end)
+
+scanLockedBtn.MouseButton1Click:Connect(function()
+	currentScanMode = "locked"
+	-- Reset delivery button appearance
+	scanDeliveryBtn.BackgroundColor3 = C.panel
+	scanDeliveryBtn.TextColor3 = C.muted
+	doScan(true, scanLockedBtn, "🔒 Scan Locked")
+end)
+
+-- =====================
+-- DROP BY VALUE
+-- =====================
+local droppingByVal = false
+
+-- Default overshoot allowance for target mode; overridden per-input with "~"
+local DEFAULT_ALLOWED_THRESHOLD = 3
+
+-- Supported dropValInput formats:
+--   "50"        -> target mode: drop fruit totaling ~50, largest value first
+--                  (default overshoot allowance: DEFAULT_ALLOWED_THRESHOLD)
+--   "50~5"      -> same, but allow up to 5 overshoot instead of the default
+--   ">10"       -> drop every fruit valued > 10
+--   "<10"       -> drop every fruit valued < 10
+--   ">=10"      -> drop every fruit valued >= 10
+--   "<=10"      -> drop every fruit valued <= 10
+--   ">10<50"    -> drop every fruit valued between 10 and 50 (exclusive)
+--   "50<10"     -> target mode, only consider fruit valued < 10
+--   "50~5<10"   -> target mode, 5 overshoot allowed, only fruit valued < 10
+--   "50>=10"    -> target mode, only consider fruit valued >= 10 (etc.)
+
+-- Parses a standalone comparison filter: ">X", "<X", ">=X", "<=X", ">min<max"
+local function parseComparison(text)
+	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
+	if min and max then
+		return {
+			type = "range",
+			min = tonumber(min),
+			max = tonumber(max),
+		}
+	end
+
+	local n = text:match("^>=([%d%.]+)$")
+	if n then
+		return { type = "gte", value = tonumber(n) }
+	end
+
+	n = text:match("^<=([%d%.]+)$")
+	if n then
+		return { type = "lte", value = tonumber(n) }
+	end
+
+	n = text:match("^>([%d%.]+)$")
+	if n then
+		return { type = "gt", value = tonumber(n) }
+	end
+
+	n = text:match("^<([%d%.]+)$")
+	if n then
+		return { type = "lt", value = tonumber(n) }
+	end
+
+	return nil
+end
+
+local function parseDropInput(text)
+	text = text:gsub("%s+", "")
+
+	-- Leading number = target mode, optionally followed by "~<threshold>"
+	-- and/or a trailing comparison filter (parsed via parseComparison).
+	local targetStr, thresholdStr, rest = text:match("^([%d%.]+)~([%d%.]+)(.*)$")
+
+	if not targetStr then
+		targetStr, rest = text:match("^([%d%.]+)(.-)$")
+	end
+
+	if targetStr then
+		local targetVal = tonumber(targetStr)
+		if not targetVal then
+			return nil
+		end
+
+		local filter = {
+			type = "target",
+			value = targetVal,
+			threshold = thresholdStr and tonumber(thresholdStr) or DEFAULT_ALLOWED_THRESHOLD,
+		}
+
+		if rest ~= "" then
+			filter.subFilter = parseComparison(rest)
+			if not filter.subFilter then
+				return nil
+			end
+		end
+
+		return filter
+	end
+
+	-- No leading number -> standalone comparison filter
+	return parseComparison(text)
+end
+
+local function matchesFilter(value, filter)
+	if filter.type == "gt" then
+		return value > filter.value
+	elseif filter.type == "lt" then
+		return value < filter.value
+	elseif filter.type == "gte" then
+		return value >= filter.value
+	elseif filter.type == "lte" then
+		return value <= filter.value
+	elseif filter.type == "range" then
+		return value > filter.min and value < filter.max
+	end
+
+	return false
+end
+
+dropValBtn.MouseButton1Click:Connect(function()
+	if currentScanMode == "locked" then
+		dropValStatusLbl.Text = "⚠️ Switch to Delivery scan first"
+		return
+	end
+
+	if droppingByVal then
+		droppingByVal = false
+		dropValBtn.Text = "🎯 Drop by Value"
+		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
+		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
+		dropValStatusLbl.Text = "Cancelled"
+		return
+	end
+
+	if #backpackFruits == 0 then
+		dropValStatusLbl.Text = "⚠️ Scan delivery first"
+		return
+	end
+
+	local filter = parseDropInput(dropValInput.Text or "")
+
+	if not filter then
+		dropValStatusLbl.Text = "⚠️ Invalid input"
+		return
+	end
+
+	local queue = {}
+	local total = 0
+
+	local function rebuildQueue()
+		table.clear(queue)
+		total = 0
+
+		local sorted = {}
+
+		for _, e in ipairs(backpackFruits) do
+			if not e.favorite then
+				table.insert(sorted, e)
+			end
+		end
+
+		table.sort(sorted, function(a, b)
+			return a.value > b.value
+		end)
+
+		if filter.type == "target" then
+			local ALLOWED_THRESHOLD = filter.threshold or DEFAULT_ALLOWED_THRESHOLD
+
+			for _, e in ipairs(sorted) do
+				if not filter.subFilter or matchesFilter(e.value, filter.subFilter) then
+					local newTotal = total + e.value
+
+					if newTotal <= filter.value then
+						table.insert(queue, e)
+						total = newTotal
+					elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
+						table.insert(queue, e)
+						total = newTotal
+						break
+					end
+				end
+			end
+		else
+			for _, e in ipairs(sorted) do
+				if matchesFilter(e.value, filter) then
+					table.insert(queue, e)
+					total += e.value
+				end
+			end
+		end
+	end
+
+	rebuildQueue()
+
+	if #queue == 0 then
+		dropValStatusLbl.Text = "⚠️ No matching fruits"
+		return
+	end
+
+	if filter.type == "target" then
+		local available = 0
+
+		for _, e in ipairs(backpackFruits) do
+			if not e.favorite and (not filter.subFilter or matchesFilter(e.value, filter.subFilter)) then
+				available += e.value
+			end
+		end
+
+		if total < filter.value then
+			if available < filter.value then
+				dropValStatusLbl.Text =
+					string.format("⚠️ Only %s available (need %dM)", formatVal(available), filter.value)
+			else
+				dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s", formatVal(total))
+			end
+			return
+		end
+	end
+
+	dropValBtn.Text = "⛔ Cancel"
+	dropValBtn.BackgroundColor3 = C.dangerDim
+	dropValBtn.TextColor3 = C.danger
+	droppingByVal = true
+
+	task.spawn(function()
+		local bp = lp:FindFirstChildOfClass("Backpack")
+		local dropped = 0
+		local batchCount = 0
+		local BATCH_SIZE = 10
+
+		local function removeFromList(id)
+			for i, entry in ipairs(backpackFruits) do
+				if entry.id == id then
+					table.remove(backpackFruits, i)
+					break
+				end
+			end
+			renderList()
+		end
+
+		local function promoteFruit(id)
+			Networking.Backpack.PromoteFruit:Fire(id)
+
+			local startT = tick()
+
+			while tick() - startT < 3 do
+				task.wait(0.05)
+
+				if bp then
+					for _, item in ipairs(bp:GetChildren()) do
+						if
+							item:IsA("Tool")
+							and item:GetAttribute("Id") == id
+							and not item:GetAttribute("FruitProxy")
+						then
+							return item
+						end
+					end
+				end
+			end
+
+			return nil
+		end
+
+		local function dropEntry(entry)
+			if filter.type == "target" then
+				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
+			else
+				dropValStatusLbl.Text = string.format("Dropping %d · %s", dropped + 1, formatVal(total))
+			end
+
+			local tool = promoteFruit(entry.id)
+
+			if not tool then
+				task.wait(0.3)
+				return
+			end
+
+			local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:EquipTool(tool)
+			end
+
+			task.wait(0.5)
+
+			Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
+
+			dropped += 1
+			batchCount += 1
+
+			removeFromList(entry.id)
+
+			task.wait(0.3)
+
+			if batchCount >= BATCH_SIZE then
+				dropValStatusLbl.Text = "Waiting for pickup..."
+
+				local waitStart = tick()
+
+				while droppingByVal and tick() - waitStart < 60 do
+					local di = Workspace:FindFirstChild("DroppedItems")
+
+					if di and #di:GetChildren() == 0 then
+						break
+					end
+
+					task.wait(1)
+				end
+
+				batchCount = 0
+			end
+		end
+
+		if filter.type == "target" then
+			-- Original behaviour
+			for _, entry in ipairs(queue) do
+				if not droppingByVal then
+					break
+				end
+
+				dropEntry(entry)
+			end
+		else
+			-- Filter mode
+			while droppingByVal do
+				rebuildQueue()
+
+				if #queue == 0 then
+					break
+				end
+
+				dropEntry(queue[1])
+			end
+		end
+
+		droppingByVal = false
+
+		dropValBtn.Text = "🎯 Drop by Value"
+		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
+		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
+
+		dropValStatusLbl.Text = string.format("✓ Dropped %d fruits", dropped)
+	end)
+end)
+
+-- ==========================================
+-- WEBHOOK CONFIGURATION & REDESIGN
+-- ==========================================
+local TIER_EMOJIS = {"🟢", "🔵", "🟣", "🔴", "🟡", "🟠"}
+local SYSTEM_COLORS = {
+    Summary = 3447003,   -- Clean Info Blue
+    Low     = 3066993,   -- Emerald Green
+    Mid     = 3447003,   -- Brilliant Blue
+    High    = 10181046,  -- Amethyst Purple
+    Highest = 15158332   -- Alizarin Red
+}
+
+-- Helper to safely assign visual priority layers based on tier list index
+local function getTierVisuals(index, maxTiers)
+    local emoji = TIER_EMOJIS[math.clamp(index, 1, #TIER_EMOJIS)] or "🔸"
+    local color = SYSTEM_COLORS.Low
+    
+    if index == maxTiers then
+        color = SYSTEM_COLORS.Highest
+    elseif index >= maxTiers * 0.75 then
+        color = SYSTEM_COLORS.High
+    elseif index >= maxTiers * 0.4 then
+        color = SYSTEM_COLORS.Mid
+    end
+    
+    return emoji, color
+end
+
+webhookBtn.MouseButton1Click:Connect(function()
+    if #backpackFruits == 0 then
+        webhookBtn.Text = "⚠️ Scan first"
+        task.wait(2)
+        webhookBtn.Text = "📤 Send to Discord"
+        return
+    end
+    
+    webhookBtn.Text = "Sending..."
+
+    local totalValue = 0
+    local tierTotals = {}
+    local tierCounts = {}
+    local tierLines = {}
+
+    -- Process full inventory data sets
+    for _, e in ipairs(backpackFruits) do
+        totalValue += e.value
+
+        local tierIdx = e.tierIdx or 1
+        local tierLabel = TIERS[tierIdx] and TIERS[tierIdx].label or "Unknown"
+
+        tierTotals[tierLabel] = (tierTotals[tierLabel] or 0) + e.value
+        tierCounts[tierLabel] = (tierCounts[tierLabel] or 0) + 1
+        tierLines[tierLabel] = tierLines[tierLabel] or {}
+
+        local fav = e.favorite and "⭐ " or "▪️ "
+        local mutationStr = (e.mutation and e.mutation ~= "") and string.format("[%s] ", e.mutation) or ""
+
+        table.insert(
+            tierLines[tierLabel],
+            string.format(
+                "%s**%s** %s— `%.1fkg` • **%s**",
+                fav,
+                e.name,
+                mutationStr,
+                e.kg,
+                formatVal(e.value)
+            )
+        )
+    end
+
+    -- Build Dashboard Tier Breakdown Text
+    local breakdown = {}
+    for i, t in ipairs(TIERS) do
+        if tierCounts[t.label] then
+            local emoji = getTierVisuals(i, #TIERS)
+            table.insert(
+                breakdown,
+                string.format("%s **%s** • %d fruits • %s", emoji, t.label, tierCounts[t.label], formatVal(tierTotals[t.label]))
+            )
+        end
+    end
+
+    local modeTag = currentScanMode == "locked" and "Locked" or "Delivery"
+    local modeEmoji = currentScanMode == "locked" and "🔒" or "🚚"
+    local currentTimestamp = os.time()
+
+    -- ==========================================
+    -- 1. SEND DASHBOARD / SUMMARY WEBHOOK
+    -- ==========================================
+    local summaryDescription = string.format(
+        "👤 **Player:** %s\n%s **Mode:** %s\n🍎 **Fruits:** %d\n💰 **Total:** %s\n🕒 **Scanned:** <t:%d:F>\n\n### 📋 Tier Breakdown\n%s",
+        lp.Name,
+        modeEmoji,
+        modeTag,
+        #backpackFruits,
+        formatVal(totalValue),
+        currentTimestamp,
+        table.concat(breakdown, "\n")
+    )
+
+    sendWebhook(
+        string.format("📊 %s Scan Summary", modeTag),
+        summaryDescription,
+        SYSTEM_COLORS.Summary
+    )
+
+    task.wait(0.6)
+
+    -- ==========================================
+    -- 2. SEND CATEGORIZED TIER WEBHOOKS (WITH CHUNKING)
+    -- ==========================================
+    for i, tier in ipairs(TIERS) do
+        local lines = tierLines[tier.label]
+
+        if lines and #lines > 0 then
+            local emoji, tierColor = getTierVisuals(i, #TIERS)
+            
+            -- Header summary block duplicated at the top of chunk segments
+            local baseHeader = string.format(
+                "👤 **Player:** %s\n📦 **Count:** %d\n💰 **Total Value:** %s\n", 
+                lp.Name, 
+                tierCounts[tier.label], 
+                formatVal(tierTotals[tier.label])
+            )
+            
+            local currentDescription = baseHeader .. "\n"
+            local maxDiscordCharacters = 3800 -- Safe threshold below the 4096 absolute embed limit
+            local segmentPart = 1
+
+            for _, line in ipairs(lines) do
+                -- Check if adding the line breaks the character buffer ceiling
+                if #currentDescription + #line + 2 > maxDiscordCharacters then
+                    local edgeTitle = segmentPart == 1 and string.format("%s %s", emoji, tier.label) or string.format("%s %s (Part %d)", emoji, tier.label, segmentPart)
+                    
+                    sendWebhook(edgeTitle, currentDescription, tierColor)
+                    task.wait(0.6)
+                    
+                    -- Reset data string framework for next part chunk
+                    currentDescription = baseHeader .. "\n"
+                    segmentPart += 1
+                end
+                currentDescription = currentDescription .. line .. "\n"
+            end
+
+            -- Flush out any remaining items inside buffer array
+            if #currentDescription > #baseHeader + 2 then
+                local finalTitle = segmentPart == 1 and string.format("%s %s", emoji, tier.label) or string.format("%s %s (Part %d)", emoji, tier.label, segmentPart)
+                sendWebhook(finalTitle, currentDescription, tierColor)
+                task.wait(0.6)
+            end
+        end
+    end
+
+    webhookBtn.Text = "✓ Sent"
+    task.wait(2)
+    webhookBtn.Text = "📤 Send to Discord"
+end)
+
+print("[GAG2 Alt Picker] Loaded.")
