@@ -1,106 +1,132 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues")
+local Workspace = game:GetService("Workspace")
+
 local request = request or http_request or (syn and syn.request)
 assert(request, "HTTP requests are not supported by this executor.")
-local WEBHOOK_URL =
-	"https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD"
-local connections = {}
-local updating = {}
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w"
+
+local lastPhase = nil
+local lastWeather = nil
+
 local function sendWebhook(title, body, color, mention)
 	task.spawn(function()
 		local success, err = pcall(function()
 			request({
 				Url = WEBHOOK_URL,
 				Method = "POST",
-				Headers = { ["Content-Type"] = "application/json" },
+				Headers = {
+					["Content-Type"] = "application/json"
+				},
 				Body = HttpService:JSONEncode({
 					content = mention or "",
-					allowed_mentions = { users = { "604609802835853333" } },
+					allowed_mentions = {
+						users = { "604609802835853333" },
+						roles = { "1521573894383861851" }
+					},
 					embeds = {
 						{
 							title = title,
 							description = body,
 							color = color or 3447003,
-							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-						},
-					},
-				}),
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+						}
+					}
+				})
 			})
 		end)
+
 		if not success then
-			warn("[Weather Watcher] Webhook failed:", err)
+			warn("[PhaseWatcher] Webhook failed:", err)
 		end
 	end)
 end
 
-sendWebhook("👀 Weather Watcher", "✅ Weather Watcher is now online and monitoring weather events.", 0x2ECC71)
+-- Startup notification
+sendWebhook(
+	"👀 Phase Watcher",
+	"✅ Phase Watcher is now online and monitoring Phase & Weather changes.",
+	0x2ECC71
+)
 
-local function formatTime(seconds)
-	seconds = math.max(0, math.floor(seconds))
+local function checkTimeCycle()
+	local phase = Workspace:GetAttribute("ActivePhase")
+	local weather = Workspace:GetAttribute("ActiveWeather")
 
-	local minutes = math.floor(seconds / 60)
-	local secs = seconds % 60
-
-	if minutes > 0 then
-		return string.format("%dm %02ds", minutes, secs)
-	end
-
-	return string.format("%ds", secs)
-end
-
-local function sendWeather(weatherName)
-	task.spawn(function()
-		local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
-
-		if endTime <= 0 then
-			return
-		end
-
-		local body =
-			string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
-
-		sendWebhook("🌦 Weather Event", body, 0x00BFFF, "<@604609802835853333>")
-
-		updating[weatherName] = nil
-	end)
-end
-local function watchWeather(weatherName)
-	local playingAttribute = weatherName .. "_Playing"
-
-	if connections[playingAttribute] then
+	-- Wait until both attributes exist
+	if not phase or not weather then
 		return
 	end
 
-	connections[playingAttribute] = WeatherValues:GetAttributeChangedSignal(playingAttribute):Connect(function()
-		if WeatherValues:GetAttribute(playingAttribute) and not updating[weatherName] then
-			updating[weatherName] = true
-			sendWeather(weatherName)
-		end
-	end)
-
-	-- If already active when the script starts
-	if WeatherValues:GetAttribute(playingAttribute) and not updating[weatherName] then
-		updating[weatherName] = true
-		sendWeather(weatherName)
+	-- Prevent duplicate notifications
+	if phase == lastPhase and weather == lastWeather then
+		return
 	end
-end
 
-local function scanAttributes()
-	for attributeName in pairs(WeatherValues:GetAttributes()) do
-		local weatherName = attributeName:match("^(.*)_Playing$")
+	lastPhase = phase
+	lastWeather = weather
 
-		if weatherName and typeof(WeatherValues:GetAttribute(attributeName)) == "boolean" then
-			watchWeather(weatherName)
+	local title = "🌗 Phase Changed"
+	local color = 0xF1C40F
+	local mention = nil
+	local icon = "🌗"
+
+	if phase == "Day" then
+		icon = "☀️"
+		title = "☀️ Day Time"
+		color = 0xF1C40F
+
+	elseif phase == "Sunset" then
+		icon = "🌇"
+		title = "🌇 Sunset"
+		color = 0xE67E22
+
+	elseif phase == "Night" then
+		icon = "🌙"
+
+		if weather == "Bloodmoon" then
+			title = "🩸🌕 BLOOD MOON HAS BEGUN!"
+			color = 0xC70039
+			mention = "<@&1521573894383861851>"
+
+		elseif weather == "Mega Moon" then
+			title = "🔵🌕 MEGA MOON HAS BEGUN!"
+			color = 0x3498DB
+
+		elseif weather == "Rainbow Moon" then
+			title = "🌈🌕 RAINBOW MOON HAS BEGUN!"
+			color = 0x9B59B6
+
+		elseif weather == "Goldmoon" then
+			title = "🟡🌕 GOLD MOON HAS BEGUN!"
+			color = 0xF1C40F
+
+		else
+			title = "🌙 Night Time Begins"
+			color = 0x2C3E50
 		end
 	end
+
+	local body = string.format(
+		"**Phase:** %s %s\n**Type:** %s",
+		icon,
+		phase,
+		weather
+	)
+
+	sendWebhook(title, body, color, mention)
 end
 
--- Initial scan
-scanAttributes()
+-- Listen for changes
+Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
+Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
 
--- Keep watching for newly-added weather attributes
-while true do
-	task.wait(5)
-	scanAttributes()
-end
+-- Wait for the game to initialize attributes
+task.spawn(function()
+	while Workspace:GetAttribute("ActivePhase") == nil
+		or Workspace:GetAttribute("ActiveWeather") == nil do
+		task.wait(1)
+	end
+
+	checkTimeCycle()
+end)
