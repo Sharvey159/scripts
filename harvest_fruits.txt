@@ -1,0 +1,172 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Attempt to load modules
+local FruitVisualizerController = require(player:WaitForChild("PlayerScripts"):WaitForChild("Controllers"):WaitForChild("FruitVisualizerController"))
+local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+-- 1. Find Plot
+local myPlot
+for _, plot in ipairs(workspace.Gardens:GetChildren()) do
+    if plot:GetAttribute("OwnerUserId") == player.UserId then
+        myPlot = plot
+        break
+    end
+end
+
+if not myPlot then
+    warn("Couldn't find your plot!")
+    return
+end
+
+-- 2. Build Minimal UI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MutantHarvesterPanel"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(200, 110)
+frame.Position = UDim2.fromScale(0.02, 0.4)
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -35, 1, 0)
+title.Position = UDim2.fromOffset(8, 0)
+title.Font = Enum.Font.GothamBold
+title.Text = "Mutant Harvester"
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Parent = titleBar
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(25, 25)
+close.Position = UDim2.new(1, -28, 0, 2)
+close.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+close.Text = "X"
+close.Font = Enum.Font.GothamBold
+close.TextColor3 = Color3.new(1, 1, 1)
+close.TextSize = 14
+close.Parent = titleBar
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
+
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, -16, 0, 20)
+statusLbl.Position = UDim2.new(0, 8, 0, 35)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Font = Enum.Font.GothamMedium
+statusLbl.Text = "Status: Idle"
+statusLbl.TextSize = 12
+statusLbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.Parent = frame
+
+local harvestBtn = Instance.new("TextButton")
+harvestBtn.Size = UDim2.new(1, -16, 0, 35)
+harvestBtn.Position = UDim2.new(0, 8, 0, 60)
+harvestBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+harvestBtn.Text = "Harvest Mutants (>30kg)"
+harvestBtn.Font = Enum.Font.GothamBold
+harvestBtn.TextSize = 13
+harvestBtn.TextColor3 = Color3.new(1, 1, 1)
+harvestBtn.Parent = frame
+Instance.new("UICorner", harvestBtn).CornerRadius = UDim.new(0, 6)
+
+local function setStatus(text)
+    statusLbl.Text = "Status: " .. text
+end
+
+-- 3. Core Harvesting Logic
+local isHarvesting = false
+
+local function harvestMutants()
+    if isHarvesting then return end
+    isHarvesting = true
+    
+    local targets = {}
+    setStatus("Scanning for mutants...")
+    
+    -- Scan Phase
+    for _, plant in ipairs(myPlot.Plants:GetChildren()) do
+        local fruits = plant:FindFirstChild("Fruits")
+        if fruits then
+            local plantId = plant:GetAttribute("PlantId") or plant.Name
+            if plantId then
+                for _, fruit in ipairs(fruits:GetChildren()) do
+                    local name = fruit:GetAttribute("CorePartName")
+                    local id = fruit:GetAttribute("FruitId")
+                    if not id or not name then continue end
+
+                    local mutation = fruit:GetAttribute("Mutation")
+                    if not mutation or mutation == "" then mutation = "None" end
+
+                    local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
+                    if not weight and FruitVisualizerController.CalculatePlantWeight then
+                        weight = FruitVisualizerController:CalculatePlantWeight(fruit)
+                    end
+                    weight = tonumber(weight) or 0
+
+                    -- Target Condition: Mutated AND weight > 30
+                    if mutation ~= "None" and weight > 30 then
+                        table.insert(targets, {PlantId = plantId, FruitId = id, Instance = fruit})
+                    end
+                end
+            end
+        end
+    end
+
+    -- Harvest Phase
+    local total = #targets
+    if total == 0 then
+        setStatus("No valid mutants found.")
+        task.wait(2)
+        setStatus("Idle")
+        isHarvesting = false
+        return
+    end
+
+    local processed = 0
+    for _, target in ipairs(targets) do
+        if target.Instance and target.Instance:IsDescendantOf(workspace) then
+            processed += 1
+            setStatus(("Harvesting... %d/%d"):format(processed, total))
+            
+            pcall(function()
+                Networking.Garden.CollectFruit:Fire(target.PlantId, target.FruitId)
+            end)
+            
+            task.wait(0.1) -- Small delay to prevent network drops
+        end
+    end
+
+    setStatus("Finished! Harvested: " .. processed)
+    task.wait(2)
+    setStatus("Idle")
+    isHarvesting = false
+end
+
+-- 4. Wiring Buttons
+harvestBtn.MouseButton1Click:Connect(function()
+    task.spawn(harvestMutants)
+end)
+
+close.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)

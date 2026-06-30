@@ -182,7 +182,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "🎒 ALT PICKER V3", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+mkLabel(hdr, "🎒 ALT PICKER V5", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -629,21 +629,50 @@ end)
 local droppingByVal = false
 
 local function parseDropInput(text)
-	text = text:gsub("%s+", "")
+	text = text:gsub("%s+", ""):lower() -- Remove spaces and convert to lowercase for easy handling of 'm'
 
-	-- Plain number = original target mode
+	-- Compound Target + Filter mode (e.g., "50m<10m", "50<=10", "100>5")
 	if not text:match("^[<>]") then
-		local n = tonumber(text)
-		if n then
-			return {
-				type = "target",
-				value = n,
-			}
+		local targetStr, sign, limitStr = text:match("^([%d%.]+m?)([<>]=?)([%d%.]+m?)$")
+		if targetStr and sign and limitStr then
+			local targetVal = tonumber((targetStr:gsub("m", "")))
+			local limitVal = tonumber((limitStr:gsub("m", "")))
+
+			local subType = "lt"
+			if sign == "<=" or sign == "<" then 
+				subType = "lte" -- Treat '<' as less than or equal as per your requirement
+			elseif sign == ">=" then 
+				subType = "gte"
+			elseif sign == ">" then 
+				subType = "gt"
+			end
+
+			if targetVal and limitVal then
+				return {
+					type = "target_filter",
+					value = targetVal,
+					subType = subType,
+					subValue = limitVal
+				}
+			end
+		end
+
+		-- Plain number or plain number with 'm' (e.g., "50" or "50m")
+		local plainStr = text:match("^([%d%.]+)m?$")
+		if plainStr then
+			local n = tonumber((plainStr:gsub("m", "")))
+			if n then
+				return {
+					type = "target",
+					value = n,
+				}
+			end
 		end
 		return nil
 	end
 
-	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
+	-- Standard pure filter parsing (also handling optional 'm')
+	local min, max = text:match("^>([%d%.]+)m?<([%d%.]+)m?$")
 	if min and max then
 		return {
 			type = "range",
@@ -652,36 +681,24 @@ local function parseDropInput(text)
 		}
 	end
 
-	local n = text:match("^>=(.+)$")
+	local n = text:match("^>=([%d%.]+)m?$")
 	if n then
-		return {
-			type = "gte",
-			value = tonumber(n),
-		}
+		return { type = "gte", value = tonumber((n:gsub("m", ""))) }
 	end
 
-	n = text:match("^<=(.+)$")
+	n = text:match("^<=([%d%.]+)m?$")
 	if n then
-		return {
-			type = "lte",
-			value = tonumber(n),
-		}
+		return { type = "lte", value = tonumber((n:gsub("m", ""))) }
 	end
 
-	n = text:match("^>(.+)$")
+	n = text:match("^>([%d%.]+)m?$")
 	if n then
-		return {
-			type = "gt",
-			value = tonumber(n),
-		}
+		return { type = "gt", value = tonumber((n:gsub("m", ""))) }
 	end
 
-	n = text:match("^<(.+)$")
+	n = text:match("^<([%d%.]+)m?$")
 	if n then
-		return {
-			type = "lt",
-			value = tonumber(n),
-		}
+		return { type = "lt", value = tonumber((n:gsub("m", ""))) }
 	end
 
 	return nil
@@ -749,10 +766,24 @@ dropValBtn.MouseButton1Click:Connect(function()
 			return a.value > b.value
 		end)
 
-		if filter.type == "target" then
+		if filter.type == "target" or filter.type == "target_filter" then
 			local ALLOWED_THRESHOLD = 3
 
 			for _, e in ipairs(sorted) do
+				-- If using compound mode, skip individual fruits that don't match the condition
+				if filter.type == "target_filter" then
+					local matchesSub = false
+					if filter.subType == "gt" and e.value > filter.subValue then matchesSub = true
+					elseif filter.subType == "lt" and e.value < filter.subValue then matchesSub = true
+					elseif filter.subType == "gte" and e.value >= filter.subValue then matchesSub = true
+					elseif filter.subType == "lte" and e.value <= filter.subValue then matchesSub = true
+					end
+					
+					if not matchesSub then
+						continue
+					end
+				end
+
 				local newTotal = total + e.value
 
 				if newTotal <= filter.value then
@@ -781,12 +812,22 @@ dropValBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	if filter.type == "target" then
+	if filter.type == "target" or filter.type == "target_filter" then
 		local available = 0
 
 		for _, e in ipairs(backpackFruits) do
 			if not e.favorite then
-				available += e.value
+				if filter.type == "target_filter" then
+					local matchesSub = false
+					if filter.subType == "gt" and e.value > filter.subValue then matchesSub = true
+					elseif filter.subType == "lt" and e.value < filter.subValue then matchesSub = true
+					elseif filter.subType == "gte" and e.value >= filter.subValue then matchesSub = true
+					elseif filter.subType == "lte" and e.value <= filter.subValue then matchesSub = true
+					end
+					if matchesSub then available += e.value end
+				else
+					available += e.value
+				end
 			end
 		end
 
@@ -847,7 +888,11 @@ dropValBtn.MouseButton1Click:Connect(function()
 		end
 
 		local function dropEntry(entry)
+<<<<<<< HEAD
 			if filter.type == "target" then
+=======
+			if filter.type == "target" or filter.type == "target_filter" then
+>>>>>>> beeda2d6710d6fff8bff906bf3543a9e76a83ab2
 				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
 			else
 				dropValStatusLbl.Text = string.format("Dropping %d · %s", dropped + 1, formatVal(total))
@@ -895,8 +940,8 @@ dropValBtn.MouseButton1Click:Connect(function()
 			end
 		end
 
-		if filter.type == "target" then
-			-- Original behaviour
+		if filter.type == "target" or filter.type == "target_filter" then
+			-- Target combination behaviour
 			for _, entry in ipairs(queue) do
 				if not droppingByVal then
 					break
@@ -905,7 +950,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 				dropEntry(entry)
 			end
 		else
-			-- Filter mode
+			-- Pure filter mode
 			while droppingByVal do
 				rebuildQueue()
 
@@ -939,19 +984,24 @@ webhookBtn.MouseButton1Click:Connect(function()
 	end
 	webhookBtn.Text = "Sending..."
 
-	local lines = {}
 	local total = 0
 	local tierTotals = {}
 	local tierCounts = {}
+	local tierLines = {}
 
 	for _, e in ipairs(backpackFruits) do
-		total = total + e.value
-		local tierLabel = e.tierIdx and TIERS[e.tierIdx].label or "?"
+		total += e.value
+
+		local tierLabel = e.tierIdx and TIERS[e.tierIdx].label or "Unknown"
+
 		tierTotals[tierLabel] = (tierTotals[tierLabel] or 0) + e.value
 		tierCounts[tierLabel] = (tierCounts[tierLabel] or 0) + 1
+		tierLines[tierLabel] = tierLines[tierLabel] or {}
+
 		local fav = e.favorite and "★ " or ""
+
 		table.insert(
-			lines,
+			tierLines[tierLabel],
 			string.format(
 				"%s%s [%s] %.1fkg — %s",
 				fav,
@@ -964,32 +1014,45 @@ webhookBtn.MouseButton1Click:Connect(function()
 	end
 
 	local breakdown = {}
+
 	for _, t in ipairs(TIERS) do
 		if tierCounts[t.label] then
 			table.insert(
 				breakdown,
-				string.format("%s: %dx · %s", t.label, tierCounts[t.label], formatVal(tierTotals[t.label]))
+				string.format(
+					"%s: %dx · %s",
+					t.label,
+					tierCounts[t.label],
+					formatVal(tierTotals[t.label])
+				)
 			)
 		end
 	end
 
-	local modeTag = currentScanMode == "locked" and "Locked" or "Delivery"
-	local footer = "\n━━━━━━━━━━━━━━━━━━━━━━\n"
-		.. string.format("**ALT %s: %d fruits · %s**", modeTag, #backpackFruits, formatVal(total))
+	local footer =
+		"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+		.. string.format(
+			"**Player:** %s\n**ALT %s:** %d fruits · %s",
+			lp.Name,
+			currentScanMode == "locked" and "Locked" or "Delivery",
+			#backpackFruits,
+			formatVal(total)
+		)
 		.. "\n"
 		.. table.concat(breakdown, " · ")
 
-	local CHUNK = 3800
-	local chunk = ""
-	local part = 1
-	for _, line in ipairs(lines) do
-		if #chunk + #line + 1 > CHUNK then
-			sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk, 3447003)
-			chunk = ""
-			part = part + 1
+	for _, tier in ipairs(TIERS) do
+		local lines = tierLines[tier.label]
+
+		if lines then
+			sendWebhook(
+				string.format("🎒 %s (%s)", tier.label, currentScanMode == "locked" and "Locked" or "Delivery"),
+				table.concat(lines, "\n") .. footer,
+				3447003
+			)
+
 			task.wait(0.5)
 		end
-		chunk = chunk .. line .. "\n"
 	end
 	sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk .. footer, 3447003)
 	webhookBtn.Text = "✓ Sent"
