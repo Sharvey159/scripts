@@ -1,6 +1,9 @@
 local HttpService = game:GetService("HttpService")
 
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w"
+local request = request or http_request or (syn and syn.request)
+assert(request, "HTTP requests are not supported by this executor.")
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H"
 
 local connections = {}
 local lastPhase
