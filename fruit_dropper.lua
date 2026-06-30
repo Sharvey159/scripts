@@ -1004,42 +1004,48 @@ webhookBtn.MouseButton1Click:Connect(function()
 		if tierCounts[t.label] then
 			table.insert(
 				breakdown,
-				string.format(
-					"%s: %dx · %s",
-					t.label,
-					tierCounts[t.label],
-					formatVal(tierTotals[t.label])
-				)
+				string.format("%s: %dx · %s", t.label, tierCounts[t.label], formatVal(tierTotals[t.label]))
 			)
 		end
 	end
 
-	local footer =
-		"\n━━━━━━━━━━━━━━━━━━━━━━\n"
-		.. string.format(
-			"**Player:** %s\n**ALT %s:** %d fruits · %s",
-			lp.Name,
-			currentScanMode == "locked" and "Locked" or "Delivery",
-			#backpackFruits,
-			formatVal(total)
-		)
-		.. "\n"
-		.. table.concat(breakdown, " · ")
+	local modeTag = currentScanMode == "locked" and "Locked" or "Delivery"
 
+	-- Summary webhook
+	sendWebhook(
+		string.format("📊 %s Summary", modeTag),
+		string.format(
+			"**Player:** %s\n**Mode:** %s\n**Total Fruits:** %d\n**Total Value:** %s\n\n%s",
+			lp.Name,
+			modeTag,
+			#backpackFruits,
+			formatVal(total),
+			table.concat(breakdown, "\n")
+		),
+		3447003
+	)
+
+	task.wait(0.5)
+
+	-- One webhook per tier
 	for _, tier in ipairs(TIERS) do
 		local lines = tierLines[tier.label]
 
-		if lines then
+		if lines and #lines > 0 then
 			sendWebhook(
-				string.format("🎒 %s (%s)", tier.label, currentScanMode == "locked" and "Locked" or "Delivery"),
-				table.concat(lines, "\n") .. footer,
+				string.format("🎒 %s", tier.label),
+				string.format(
+					"**Player:** %s\n**Count:** %d\n**Total:** %s\n\n%s",
+					lp.Name,
+					tierCounts[tier.label],
+					formatVal(tierTotals[tier.label]),
+					table.concat(lines, "\n")
+				),
 				3447003
 			)
-
 			task.wait(0.5)
 		end
 	end
-	sendWebhook(string.format("🎒 Alt %s (%d)", modeTag, part), chunk .. footer, 3447003)
 	webhookBtn.Text = "✓ Sent"
 	task.wait(2)
 	webhookBtn.Text = "📤 Send to Discord"
