@@ -182,7 +182,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "🎒 ALT PICKER V4", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+mkLabel(hdr, "🎒 ALT PICKER V5", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -635,9 +635,9 @@ local function parseDropInput(text)
 	if not text:match("^[<>]") then
 		local targetStr, sign, limitStr = text:match("^([%d%.]+m?)([<>]=?)([%d%.]+m?)$")
 		if targetStr and sign and limitStr then
-			local targetVal = tonumber(targetStr:gsub("m", ""))
-			local limitVal = tonumber(limitStr:gsub("m", ""))
-			
+			local targetVal = tonumber((targetStr:gsub("m", "")))
+			local limitVal = tonumber((limitStr:gsub("m", "")))
+
 			local subType = "lt"
 			if sign == "<=" or sign == "<" then 
 				subType = "lte" -- Treat '<' as less than or equal as per your requirement
@@ -659,12 +659,14 @@ local function parseDropInput(text)
 
 		-- Plain number or plain number with 'm' (e.g., "50" or "50m")
 		local plainStr = text:match("^([%d%.]+)m?$")
-		local n = tonumber(plainStr)
-		if n then
-			return {
-				type = "target",
-				value = n,
-			}
+		if plainStr then
+			local n = tonumber((plainStr:gsub("m", "")))
+			if n then
+				return {
+					type = "target",
+					value = n,
+				}
+			end
 		end
 		return nil
 	end
@@ -680,16 +682,24 @@ local function parseDropInput(text)
 	end
 
 	local n = text:match("^>=([%d%.]+)m?$")
-	if n then return { type = "gte", value = tonumber(n) } end
+	if n then
+		return { type = "gte", value = tonumber((n:gsub("m", ""))) }
+	end
 
 	n = text:match("^<=([%d%.]+)m?$")
-	if n then return { type = "lte", value = tonumber(n) } end
+	if n then
+		return { type = "lte", value = tonumber((n:gsub("m", ""))) }
+	end
 
 	n = text:match("^>([%d%.]+)m?$")
-	if n then return { type = "gt", value = tonumber(n) } end
+	if n then
+		return { type = "gt", value = tonumber((n:gsub("m", ""))) }
+	end
 
 	n = text:match("^<([%d%.]+)m?$")
-	if n then return { type = "lt", value = tonumber(n) } end
+	if n then
+		return { type = "lt", value = tonumber((n:gsub("m", ""))) }
+	end
 
 	return nil
 end
