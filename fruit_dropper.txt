@@ -628,51 +628,25 @@ end)
 -- =====================
 local droppingByVal = false
 
-local function parseDropInput(text)
-	text = text:gsub("%s+", ""):lower() -- Remove spaces and convert to lowercase for easy handling of 'm'
+-- Default overshoot allowance for target mode; overridden per-input with "~"
+local DEFAULT_ALLOWED_THRESHOLD = 3
 
-	-- Compound Target + Filter mode (e.g., "50m<10m", "50<=10", "100>5")
-	if not text:match("^[<>]") then
-		local targetStr, sign, limitStr = text:match("^([%d%.]+m?)([<>]=?)([%d%.]+m?)$")
-		if targetStr and sign and limitStr then
-			local targetVal = tonumber((targetStr:gsub("m", "")))
-			local limitVal = tonumber((limitStr:gsub("m", "")))
+-- Supported dropValInput formats:
+--   "50"        -> target mode: drop fruit totaling ~50, largest value first
+--                  (default overshoot allowance: DEFAULT_ALLOWED_THRESHOLD)
+--   "50~5"      -> same, but allow up to 5 overshoot instead of the default
+--   ">10"       -> drop every fruit valued > 10
+--   "<10"       -> drop every fruit valued < 10
+--   ">=10"      -> drop every fruit valued >= 10
+--   "<=10"      -> drop every fruit valued <= 10
+--   ">10<50"    -> drop every fruit valued between 10 and 50 (exclusive)
+--   "50<10"     -> target mode, only consider fruit valued < 10
+--   "50~5<10"   -> target mode, 5 overshoot allowed, only fruit valued < 10
+--   "50>=10"    -> target mode, only consider fruit valued >= 10 (etc.)
 
-			local subType = "lt"
-			if sign == "<=" or sign == "<" then 
-				subType = "lte" -- Treat '<' as less than or equal as per your requirement
-			elseif sign == ">=" then 
-				subType = "gte"
-			elseif sign == ">" then 
-				subType = "gt"
-			end
-
-			if targetVal and limitVal then
-				return {
-					type = "target_filter",
-					value = targetVal,
-					subType = subType,
-					subValue = limitVal
-				}
-			end
-		end
-
-		-- Plain number or plain number with 'm' (e.g., "50" or "50m")
-		local plainStr = text:match("^([%d%.]+)m?$")
-		if plainStr then
-			local n = tonumber((plainStr:gsub("m", "")))
-			if n then
-				return {
-					type = "target",
-					value = n,
-				}
-			end
-		end
-		return nil
-	end
-
-	-- Standard pure filter parsing (also handling optional 'm')
-	local min, max = text:match("^>([%d%.]+)m?<([%d%.]+)m?$")
+-- Parses a standalone comparison filter: ">X", "<X", ">=X", "<=X", ">min<max"
+local function parseComparison(text)
+	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
 	if min and max then
 		return {
 			type = "range",
@@ -681,27 +655,64 @@ local function parseDropInput(text)
 		}
 	end
 
-	local n = text:match("^>=([%d%.]+)m?$")
+	local n = text:match("^>=([%d%.]+)$")
 	if n then
-		return { type = "gte", value = tonumber((n:gsub("m", ""))) }
+		return { type = "gte", value = tonumber(n) }
 	end
 
-	n = text:match("^<=([%d%.]+)m?$")
+	n = text:match("^<=([%d%.]+)$")
 	if n then
-		return { type = "lte", value = tonumber((n:gsub("m", ""))) }
+		return { type = "lte", value = tonumber(n) }
 	end
 
-	n = text:match("^>([%d%.]+)m?$")
+	n = text:match("^>([%d%.]+)$")
 	if n then
-		return { type = "gt", value = tonumber((n:gsub("m", ""))) }
+		return { type = "gt", value = tonumber(n) }
 	end
 
-	n = text:match("^<([%d%.]+)m?$")
+	n = text:match("^<([%d%.]+)$")
 	if n then
-		return { type = "lt", value = tonumber((n:gsub("m", ""))) }
+		return { type = "lt", value = tonumber(n) }
 	end
 
 	return nil
+end
+
+local function parseDropInput(text)
+	text = text:gsub("%s+", "")
+
+	-- Leading number = target mode, optionally followed by "~<threshold>"
+	-- and/or a trailing comparison filter (parsed via parseComparison).
+	local targetStr, thresholdStr, rest = text:match("^([%d%.]+)~([%d%.]+)(.*)$")
+
+	if not targetStr then
+		targetStr, rest = text:match("^([%d%.]+)(.-)$")
+	end
+
+	if targetStr then
+		local targetVal = tonumber(targetStr)
+		if not targetVal then
+			return nil
+		end
+
+		local filter = {
+			type = "target",
+			value = targetVal,
+			threshold = thresholdStr and tonumber(thresholdStr) or DEFAULT_ALLOWED_THRESHOLD,
+		}
+
+		if rest ~= "" then
+			filter.subFilter = parseComparison(rest)
+			if not filter.subFilter then
+				return nil
+			end
+		end
+
+		return filter
+	end
+
+	-- No leading number -> standalone comparison filter
+	return parseComparison(text)
 end
 
 local function matchesFilter(value, filter)
@@ -766,33 +777,21 @@ dropValBtn.MouseButton1Click:Connect(function()
 			return a.value > b.value
 		end)
 
-		if filter.type == "target" or filter.type == "target_filter" then
-			local ALLOWED_THRESHOLD = 3
+		if filter.type == "target" then
+			local ALLOWED_THRESHOLD = filter.threshold or DEFAULT_ALLOWED_THRESHOLD
 
 			for _, e in ipairs(sorted) do
-				-- If using compound mode, skip individual fruits that don't match the condition
-				if filter.type == "target_filter" then
-					local matchesSub = false
-					if filter.subType == "gt" and e.value > filter.subValue then matchesSub = true
-					elseif filter.subType == "lt" and e.value < filter.subValue then matchesSub = true
-					elseif filter.subType == "gte" and e.value >= filter.subValue then matchesSub = true
-					elseif filter.subType == "lte" and e.value <= filter.subValue then matchesSub = true
-					end
-					
-					if not matchesSub then
-						continue
-					end
-				end
+				if not filter.subFilter or matchesFilter(e.value, filter.subFilter) then
+					local newTotal = total + e.value
 
-				local newTotal = total + e.value
-
-				if newTotal <= filter.value then
-					table.insert(queue, e)
-					total = newTotal
-				elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
-					table.insert(queue, e)
-					total = newTotal
-					break
+					if newTotal <= filter.value then
+						table.insert(queue, e)
+						total = newTotal
+					elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
+						table.insert(queue, e)
+						total = newTotal
+						break
+					end
 				end
 			end
 		else
@@ -812,22 +811,12 @@ dropValBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	if filter.type == "target" or filter.type == "target_filter" then
+	if filter.type == "target" then
 		local available = 0
 
 		for _, e in ipairs(backpackFruits) do
-			if not e.favorite then
-				if filter.type == "target_filter" then
-					local matchesSub = false
-					if filter.subType == "gt" and e.value > filter.subValue then matchesSub = true
-					elseif filter.subType == "lt" and e.value < filter.subValue then matchesSub = true
-					elseif filter.subType == "gte" and e.value >= filter.subValue then matchesSub = true
-					elseif filter.subType == "lte" and e.value <= filter.subValue then matchesSub = true
-					end
-					if matchesSub then available += e.value end
-				else
-					available += e.value
-				end
+			if not e.favorite and (not filter.subFilter or matchesFilter(e.value, filter.subFilter)) then
+				available += e.value
 			end
 		end
 
@@ -888,11 +877,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 		end
 
 		local function dropEntry(entry)
-<<<<<<< HEAD
 			if filter.type == "target" then
-=======
-			if filter.type == "target" or filter.type == "target_filter" then
->>>>>>> beeda2d6710d6fff8bff906bf3543a9e76a83ab2
 				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
 			else
 				dropValStatusLbl.Text = string.format("Dropping %d · %s", dropped + 1, formatVal(total))
@@ -940,8 +925,8 @@ dropValBtn.MouseButton1Click:Connect(function()
 			end
 		end
 
-		if filter.type == "target" or filter.type == "target_filter" then
-			-- Target combination behaviour
+		if filter.type == "target" then
+			-- Original behaviour
 			for _, entry in ipairs(queue) do
 				if not droppingByVal then
 					break
@@ -950,7 +935,7 @@ dropValBtn.MouseButton1Click:Connect(function()
 				dropEntry(entry)
 			end
 		else
-			-- Pure filter mode
+			-- Filter mode
 			while droppingByVal do
 				rebuildQueue()
 
