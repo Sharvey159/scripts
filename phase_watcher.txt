@@ -1,0 +1,106 @@
+local HttpService = game:GetService("HttpService")
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w"
+
+local connections = {}
+local lastPhase
+
+local function sendWebhook(title, body, color, mention)
+	task.spawn(function()
+		local success, err = pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json"
+				},
+				Body = HttpService:JSONEncode({
+					content = mention or "",
+					allowed_mentions = {
+						roles = { "1521573894383861851" }
+					},
+					embeds = {
+						{
+							title = title,
+							description = body,
+							color = color or 0xF1C40F,
+							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+						}
+					}
+				})
+			})
+		end)
+
+		if not success then
+			warn("[Phase Watcher] Webhook failed:", err)
+		end
+	end)
+end
+
+sendWebhook(
+	"👀 Phase Watcher",
+	"✅ Phase Watcher is now online and monitoring phase changes.",
+	0x2ECC71
+)
+
+local phaseIcons = {
+	Morning = "🌅",
+	Day = "☀️",
+	Evening = "🌇",
+	Night = "🌙",
+	Bloodmoon = "🩸🌕"
+}
+
+local function sendPhase()
+	local phase = workspace:GetAttribute("ActivePhase")
+
+	if not phase or phase == lastPhase then
+		return
+	end
+
+	lastPhase = phase
+
+	local weather = workspace:GetAttribute("ActiveWeather") or "Unknown"
+	local icon = phaseIcons[phase] or "🌗"
+
+	local title = icon .. " Phase Changed"
+	local color = 0xF1C40F
+	local mention = nil
+
+	if phase == "Bloodmoon" then
+		title = "🩸🌕 BLOOD MOON HAS BEGUN!"
+		color = 0xC70039
+		mention = "<@&1521573894383861851>"
+	end
+
+	local body = string.format(
+		"**Phase:** %s %s\n**Weather:** %s",
+		icon,
+		phase,
+		weather
+	)
+
+	sendWebhook(title, body, color, mention)
+end
+
+local function watchPhase()
+	if connections.ActivePhase then
+		return
+	end
+
+	connections.ActivePhase = workspace:GetAttributeChangedSignal("ActivePhase"):Connect(sendPhase)
+
+	-- Send current phase if already active when the script starts
+	sendPhase()
+end
+
+watchPhase()
+
+-- Reattach if needed (mirrors your weather watcher)
+while true do
+	task.wait(5)
+
+	if not connections.ActivePhase then
+		watchPhase()
+	end
+end
