@@ -553,13 +553,13 @@ local function doScan(favouriteFilter, btn, label)
 			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
 				if fav == favouriteFilter then
 					table.insert(fruits, {
-						id = item:GetAttribute("Id"),
-						name = item:GetAttribute("FruitName") or item.Name,
-						mutation = item:GetAttribute("Mutation") or "",
-						kg = item:GetAttribute("Weight") or 0),
-						favorite = fav,
-						value = 0,
-						tierIdx = nil,
+ 					   id = item:GetAttribute("Id"),
+ 					   name = item:GetAttribute("FruitName") or item.Name,
+ 					   mutation = item:GetAttribute("Mutation") or "",
+  					   kg = item:GetAttribute("Weight") or 0,
+  					   favorite = fav,
+    				   value = 0,
+    				   tierIdx = nil,
 					})
 				end
 			end
