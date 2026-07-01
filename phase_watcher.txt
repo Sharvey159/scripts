@@ -1,10 +1,13 @@
 local HttpService = game:GetService("HttpService")
-
 local Workspace = game:GetService("Workspace")
-
 local request = request or http_request or (syn and syn.request)
-
 assert(request, "HTTP requests are not supported by this executor.")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local AVOID_PHASES = {
+    Goldmoon = true,
+}
 
 local WEBHOOK_URL =
 	"https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w"
@@ -74,15 +77,38 @@ local function checkTimeCycle()
 	end
 
 	lastPhase = phase
-
 	lastWeather = weather
 
+	-- Leave if this is a moon/weather we want to avoid
+	if phase == "Night" and AVOID_PHASES[weather] then
+
+    	local body = string.format(
+        	"**Phase:** 🌙 %s\n" ..
+        	"**Type:** %s\n\n" ..
+        	"🚪 **Action:** Leaving server.\n" ..
+        	"🔄 Will rejoin later.",
+	        phase,
+       	 weather
+    	)
+
+    	sendWebhook(
+     	   "🚨 Avoided Moon Event",
+     	   body,
+     	   0xE74C3C,
+     	   "<@604609802835853333>"
+    	)
+
+    	task.wait(1) -- Give Discord time to send
+
+   		LocalPlayer:Kick("Avoiding " .. weather .. ". Rejoining later.")
+
+  		return
+
+	end
+
 	local title = "🌗 Phase Changed"
-
 	local color = 0xF1C40F
-
 	local mention = nil
-
 	local icon = "🌗"
 
 	-- Phase & Weather Logic
