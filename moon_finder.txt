@@ -65,7 +65,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v24"
+title.Text = "Auto-Farm v25"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -184,9 +184,9 @@ local function scanPlants()
                         Instance = fruit,
                     }
 
-                    if weight < 90 then
+                    if weight < 60 then
                         table.insert(harvestPlants, fruitData)
-                    elseif weight < 100 then
+                    elseif weight < 70 then
                         table.insert(shovelPlants, fruitData)
                     else
                         table.insert(keptPlants, fruitData)
