@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -29,6 +30,9 @@ local HARVEST_INTERVAL = 0.1
 
 local isAutoFarming = false
 local isScriptRunning = true 
+
+-- Webhook Constants
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
 
 -- High-Performance O(1) Memory-Stable Queue Structure 
 local function createQueue()
@@ -60,12 +64,40 @@ end
 
 -- Central Caches and Queues
 local fruitCache = {}         -- Hash map storage: [Instance] = FruitData
-local plantConnections = {}    -- Track event listeners to clean memory seamlessly: [Instance] = Array of connections
+local plantConnections = {}   -- Track event listeners to clean memory seamlessly: [Instance] = Array of connections
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
-local keptCount = 0           
 
--- 3. Build UI (Visually Identical to v26 Layout)
+-- New Kept Fruit Data Structures
+local keptCount = 0           
+local webhookQueue = createQueue() -- Queue specifically for webhook processing
+local keptFruitCache = {}          -- O(1) cache for kept fruits [FruitId] = true
+local keptFruitList = {}           -- Maintained list of active kept fruits
+
+-- Webhook Utility Function
+local function sendWebhook(title, body, color)
+    task.spawn(function()
+        pcall(function()
+            request({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    embeds = {
+                        {
+                            title = title,
+                            description = body,
+                            color = color or 3447003,
+                            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                        },
+                    },
+                }),
+            })
+        end)
+    end)
+end
+
+-- 3. Build UI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AdminPanel"
 screenGui.ResetOnSpawn = false
@@ -93,7 +125,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v26"
+title.Text = "Auto-Farm v27"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -167,19 +199,16 @@ local function getShovelTool()
     local character = player.Character
     if not character then return nil end
     
-    -- Check if tool is already equipped
     if cachedShovelInstance and cachedShovelInstance.Parent == character then
         return cachedShovelInstance
     end
     
-    -- Fast non-recursive check in character
     local tool = character:FindFirstChild(SHOVEL_NAME)
     if tool then
         cachedShovelInstance = tool
         return tool
     end
     
-    -- Fast non-recursive check in backpack
     tool = player.Backpack:FindFirstChild(SHOVEL_NAME)
     if tool then
         local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -209,7 +238,6 @@ local function processFruit(fruit, plant)
         mutation = "None"
     end
     
-    -- Single weight calculation calculation lifecycle
     local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
     if not weight and FruitVisualizerController.CalculatePlantWeight then
         weight = FruitVisualizerController:CalculatePlantWeight(fruit)
@@ -228,13 +256,42 @@ local function processFruit(fruit, plant)
     
     fruitCache[fruit] = fruitData
     
-    -- Stream straight into the designated consumer queues
     if weight < 50 then
         harvestQueue:push(fruitData)
     elseif weight < 60 then
         shovelQueue:push(fruitData)
     else
-        keptCount = keptCount + 1
+        -- Check cache for duplicate protection
+        if not keptFruitCache[id] then
+            keptFruitCache[id] = true
+            keptCount += 1
+            
+            -- Insert and sort kept array in place
+            table.insert(keptFruitList, fruitData)
+            table.sort(keptFruitList, function(a, b)
+                return a.Weight > b.Weight
+            end)
+            
+            -- Dispatch to webhook worker
+            webhookQueue:push(fruitData)
+        end
+    end
+end
+
+-- Cleanup Utility for Kept Fruits
+local function removeKeptFruitState(data)
+    if not data.FruitId then return end
+    if keptFruitCache[data.FruitId] then
+        keptFruitCache[data.FruitId] = nil
+        keptCount -= 1
+        
+        -- Clean out from sorted list (O(n) but tiny list)
+        for i, f in ipairs(keptFruitList) do
+            if f.FruitId == data.FruitId then
+                table.remove(keptFruitList, i)
+                break
+            end
+        end
     end
 end
 
@@ -245,12 +302,10 @@ local function setupPlant(plant)
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
-    -- Populate from existing state
     for _, fruit in ipairs(fruitsFolder:GetChildren()) do
         processFruit(fruit, plant)
     end
     
-    -- Defer processing reactions to maximize UI frame thread headroom
     local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit)
         task.defer(processFruit, fruit, plant)
     end)
@@ -260,6 +315,11 @@ local function setupPlant(plant)
         if data then
             data.Processed = true 
             fruitCache[fruit] = nil
+            
+            -- Ensure it is removed from active kept pool if it was high weight
+            if data.Weight >= 60 then
+                removeKeptFruitState(data)
+            end
         end
     end)
     
@@ -283,6 +343,10 @@ local function cleanupPlant(plant)
             if data then
                 data.Processed = true
                 fruitCache[fruit] = nil
+                
+                if data.Weight >= 60 then
+                    removeKeptFruitState(data)
+                end
             end
         end
     end
@@ -306,15 +370,13 @@ task.spawn(function()
             local data = harvestQueue:pop()
             if data and not data.Processed and data.Instance and data.Instance.Parent then
                 data.Processed = true
-                
                 pcall(function()
                     Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "")
                 end)
-                
                 task.wait(HARVEST_INTERVAL)
             end
         else
-            task.wait(0.1) -- Minimal yielding sleep when active queue is empty
+            task.wait(0.1) 
         end
     end
 end)
@@ -329,19 +391,11 @@ task.spawn(function()
                 if tool then
                     data.Processed = true
                     local shovelType = tool:GetAttribute("Shovel")
-                    
                     pcall(function()
-                        Networking.Shovel.UseShovel:Fire(
-                            data.PlantId,
-                            data.FruitId,
-                            shovelType,
-                            tool
-                        )
+                        Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool)
                     end)
-                    
                     task.wait(SHOVEL_INTERVAL)
                 else
-                    -- Handle potential drop exceptions gracefully by re-queueing target item
                     shovelQueue:push(data)
                     task.wait(0.5) 
                 end
@@ -352,12 +406,46 @@ task.spawn(function()
     end
 end)
 
--- Worker 3: UI Throttle & Virtual Text State Caching
+-- Worker 3: Webhook Batching Engine (NEW)
+task.spawn(function()
+    while isScriptRunning do
+        if webhookQueue:count() > 0 then
+            -- Initial wait for batched arrivals (e.g., plot load or fast growths)
+            task.wait(2) 
+            
+            local batchedFruits = {}
+            while webhookQueue:count() > 0 do
+                table.insert(batchedFruits, webhookQueue:pop())
+            end
+            
+            if #batchedFruits > 0 then
+                -- Construct summary payload
+                local title = string.format("🌕 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
+                local descText = ""
+                
+                for _, f in ipairs(batchedFruits) do
+                    descText ..= string.format("+ %s\n  %.2fkg\n  %s\n\n", f.Name, f.Weight, f.Mutation)
+                end
+                
+                descText ..= string.format("**Total Kept:** %d", keptCount)
+                
+                -- Send the webhook to the URL
+                sendWebhook(title, descText, 16766720) -- Gold/Yellow embed color
+                
+                -- Strict cooldown to avoid Discord API drops
+                task.wait(0.5)
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 4: UI Throttle & Virtual Text State Caching
 task.spawn(function()
     local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
     
     while isScriptRunning do
-        local now = os.clock()
         local harvestRemaining = harvestQueue:count()
         local shovelRemaining = shovelQueue:count()
         
@@ -380,13 +468,12 @@ task.spawn(function()
             stateStr = "Status: Idle (Paused)"
         end
         
-        -- Guard UI changes behind layout filters to eliminate continuous redraw costs
         if stateStr ~= lastStateText then lastStateText = stateStr stateLbl.Text = stateStr end
         if harvestStr ~= lastHarvestText then lastHarvestText = harvestStr harvestLbl.Text = harvestStr end
         if shovelStr ~= lastShovelText then lastShovelText = shovelStr shovelLbl.Text = shovelStr end
         if keptStr ~= lastKeptText then lastKeptText = keptStr keptLbl.Text = keptStr end
         
-        task.wait(0.3) -- Strict 3.3 updates per second constraint
+        task.wait(0.3) 
     end
 end)
 
@@ -423,7 +510,6 @@ close.MouseButton1Click:Connect(function()
     isAutoFarming = false 
     isScriptRunning = false 
     
-    -- Clean script connections globally
     plantAddedConn:Disconnect()
     plantRemovedConn:Disconnect()
     for plant, _ in pairs(plantConnections) do
