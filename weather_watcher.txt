@@ -2,11 +2,22 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues")
 local request = request or http_request or (syn and syn.request)
-assert(request, "HTTP requests are not supported by this executor.")
+assert(request, "HTTP requests are not supported by this executor."
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local AVOID_WEATHER = {
+    Snowfall = true,
+    -- Blizzard = true,
+    -- Sandstorm = true,
+}
+
 local WEBHOOK_URL =
 	"https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD"
 local connections = {}
 local updating = {}
+)
+
 local function sendWebhook(title, body, color, mention)
 	task.spawn(function()
 		local success, err = pcall(function()
@@ -50,21 +61,58 @@ local function formatTime(seconds)
 end
 
 local function sendWeather(weatherName)
-	task.spawn(function()
-		local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
+    task.spawn(function()
+        local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
 
-		if endTime <= 0 then
-			return
-		end
+        if endTime <= 0 then
+            updating[weatherName] = nil
+            return
+        end
 
-		local body =
-			string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
+        if AVOID_WEATHER[weatherName] then
+            local remaining = math.max(0, endTime - os.time())
 
-		sendWebhook("🌦 Weather Event", body, 0x00BFFF, "<@604609802835853333>")
+            local body = string.format(
+                "**Weather:** %s\n" ..
+                "🚪 Action: Leaving server\n" ..
+                "⏱ Rejoin after: %s\n" ..
+                "📅 Ends: <t:%d:R>\n" ..
+                "🕒 Exact: <t:%d:F>",
+                weatherName,
+                formatTime(remaining),
+                endTime,
+                endTime
+            )
 
-		updating[weatherName] = nil
-	end)
+            sendWebhook("🚨 Avoided Weather", body, 0xE74C3C, "<@604609802835853333>")
+
+            task.wait(1) -- Give the webhook time to send.
+
+            LocalPlayer:Kick(
+                string.format(
+                    "Avoiding %s.\nRejoin in %s.",
+                    weatherName,
+                    formatTime(remaining)
+                )
+            )
+
+            return
+        end
+
+        -- Existing webhook for weather you don't avoid
+        local body = string.format(
+            "**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>",
+            weatherName,
+            endTime,
+            endTime
+        )
+
+        sendWebhook("🌦 Weather Event", body, 0x00BFFF, "<@604609802835853333>")
+
+        updating[weatherName] = nil
+    end)
 end
+
 local function watchWeather(weatherName)
 	local playingAttribute = weatherName .. "_Playing"
 
