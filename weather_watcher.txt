@@ -2,7 +2,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues")
 local request = request or http_request or (syn and syn.request)
-assert(request, "HTTP requests are not supported by this executor."
+assert(request, "HTTP requests are not supported by this executor.")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
@@ -16,7 +16,7 @@ local WEBHOOK_URL =
 	"https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD"
 local connections = {}
 local updating = {}
-)
+
 
 local function sendWebhook(title, body, color, mention)
 	task.spawn(function()
