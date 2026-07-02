@@ -125,7 +125,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v28"
+title.Text = "Auto-Farm v29"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -256,9 +256,9 @@ local function processFruit(fruit, plant)
     
     fruitCache[fruit] = fruitData
     
-    if weight < 50 then
+    if weight < 39 then
         harvestQueue:push(fruitData)
-    elseif weight < 60 then
+    elseif weight < 40 then
         shovelQueue:push(fruitData)
     else
         -- Check cache for duplicate protection
