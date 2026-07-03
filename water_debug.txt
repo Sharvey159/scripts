@@ -1,0 +1,285 @@
+-- --- SERVICES ---
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+-- --- REQUISITES & VARIABLES ---
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local SPRINKLER_TYPES = {
+	"Common Sprinkler",
+	"Uncommon Sprinkler",
+	"Rare Sprinkler",
+	"Legendary Sprinkler",
+}
+local WATERING_CAN_NAME = "Super Watering Can"
+local DEFAULT_RADIUS = 3
+local DEFAULT_DELAY = 1
+
+local isRunning = false
+
+-- ============================================================================
+-- CORE LOGIC
+-- ============================================================================
+
+local function getCharacter()
+	return player.Character or player.CharacterAdded:Wait()
+end
+
+local function findTargetPlayer(targetQuery)
+	if not targetQuery or targetQuery == "" then return nil end
+	
+	-- Trim any accidental spaces from the input
+	targetQuery = targetQuery:match("^%s*(.-)%s*$")
+	
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name) == string.lower(targetQuery) or tostring(p.UserId) == targetQuery then
+			return p
+		end
+	end
+	return nil
+end
+
+local function findPlotForUser(userId)
+	local gardens = workspace:FindFirstChild("Gardens") or workspace:FindFirstChild("Plots")
+	if not gardens then return nil end
+	
+	for _, plot in ipairs(gardens:GetChildren()) do
+		local owner = plot:GetAttribute("OwnerUserId")
+		if owner and tostring(owner) == tostring(userId) then
+			return plot
+		end
+	end
+	return nil
+end
+
+local function getPlantPosition(plant)
+	if not plant then return nil end
+	if plant:IsA("Model") and plant.PrimaryPart then return plant.PrimaryPart.Position end
+	
+	local ok, pivot = pcall(function() return plant:GetPivot() end)
+	if ok and pivot then return pivot.Position end
+	if plant:IsA("BasePart") then return plant.Position end
+	
+	for _, child in ipairs(plant:GetDescendants()) do
+		if child:IsA("BasePart") then return child.Position end
+	end
+	return nil
+end
+
+local function getFirstAvailablePlant(plot)
+	local plantsFolder = plot:FindFirstChild("Plants")
+	if not plantsFolder then return nil end
+	
+	local plants = plantsFolder:GetChildren()
+	for _, plant in ipairs(plants) do
+		if getPlantPosition(plant) then return plant end
+	end
+	return plants[1]
+end
+
+local function raycastToGround(position)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { getCharacter() }
+	
+	local origin = position + Vector3.new(0, 15, 0)
+	local direction = Vector3.new(0, -100, 0)
+	local result = workspace:Raycast(origin, direction, params)
+	
+	return result and result.Position or position
+end
+
+local function equipTool(toolName)
+	local char = getCharacter()
+	local tool = player.Backpack:FindFirstChild(toolName) or char:FindFirstChild(toolName)
+	if not tool then return nil end
+	
+	if tool.Parent ~= char then
+		local humanoid = char:FindFirstChild("Humanoid")
+		if humanoid then 
+			humanoid:EquipTool(tool) 
+		end
+		
+		-- Strict yield until the tool is physically parented to the character.
+		-- Without this, the server distance-check fails and clamps placement to your feet.
+		local deadline = tick() + 2
+		repeat
+			task.wait()
+		until tool.Parent == char or tick() > deadline
+		
+		-- Give the server one extra moment to sync the tool's physical location
+		task.wait(0.1)
+	end
+	return tool
+end
+
+local function placeSprinklerAt(position, sprinklerName, plotId)
+	local tool = equipTool(sprinklerName)
+	if not tool then return false end
+	
+	local groundPosition = raycastToGround(position)
+	pcall(function()
+		Networking.Place.PlaceSprinkler:Fire(groundPosition, sprinklerName, tool, plotId)
+	end)
+	return true
+end
+
+-- ============================================================================
+-- ACTIONS
+-- ============================================================================
+
+local function runPlacementCycle(targetQuery)
+	if isRunning then return end
+	isRunning = true
+
+	local targetPlayer = findTargetPlayer(targetQuery)
+	local plot = targetPlayer and findPlotForUser(targetPlayer.UserId)
+	local plant = plot and getFirstAvailablePlant(plot)
+	local centerPosition = plant and getPlantPosition(plant)
+
+	if not centerPosition then
+		warn("[AutoSprinkler] Could not find player, plot, or plant.")
+		isRunning = false
+		return
+	end
+
+	local plotId = tonumber(plot.Name:match("%d+")) or 0
+
+	for k, sprinklerName in ipairs(SPRINKLER_TYPES) do
+		local angle = (k - 1) * (2 * math.pi / 8)
+		local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
+		
+		placeSprinklerAt(centerPosition + offset, sprinklerName, plotId)
+		task.wait(DEFAULT_DELAY)
+	end
+	
+	isRunning = false
+end
+
+local function waterPlant(targetQuery)
+	if isRunning then return end
+
+	local targetPlayer = findTargetPlayer(targetQuery)
+	local plot = targetPlayer and findPlotForUser(targetPlayer.UserId)
+	local plant = plot and getFirstAvailablePlant(plot)
+	local centerPosition = plant and getPlantPosition(plant)
+
+	if not centerPosition then
+		warn("[AutoSprinkler] Could not find player, plot, or plant.")
+		return
+	end
+
+	local tool = equipTool(WATERING_CAN_NAME)
+	if tool then
+		pcall(function()
+			Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, tool)
+		end)
+	end
+end
+
+-- ============================================================================
+-- MINIMAL UI SYSTEM
+-- ============================================================================
+
+local function createSimpleUI()
+	local existing = playerGui:FindFirstChild("MiniSprinklerPanel")
+	if existing then existing:Destroy() end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MiniSprinklerPanel"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	-- Main Container Frame
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0, 200, 0, 140)
+	frame.Position = UDim2.new(0.5, -100, 0.8, -140)
+	frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+	
+	local stroke = Instance.new("UIStroke", frame)
+	stroke.Color = Color3.fromRGB(70, 255, 150)
+	stroke.Thickness = 2
+
+	-- Layout Configuration
+	local layout = Instance.new("UIListLayout", frame)
+	layout.Padding = UDim.new(0, 8)
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+
+	-- Search Input Field
+	local targetInput = Instance.new("TextBox")
+	targetInput.Size = UDim2.new(0.9, 0, 0, 30)
+	targetInput.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	targetInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+	targetInput.Font = Enum.Font.GothamMedium
+	targetInput.TextSize = 14
+	targetInput.PlaceholderText = "Player Name"
+	targetInput.Text = player.Name
+	targetInput.Parent = frame
+	Instance.new("UICorner", targetInput).CornerRadius = UDim.new(0, 4)
+
+	-- Button Factory Utility
+	local function makeButton(text, color)
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(0.9, 0, 0, 35)
+		btn.BackgroundColor3 = color
+		btn.TextColor3 = Color3.fromRGB(25, 25, 30)
+		btn.Font = Enum.Font.GothamBold
+		btn.TextSize = 14
+		btn.Text = text
+		btn.Parent = frame
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+		return btn
+	end
+
+	local placeBtn = makeButton("Place Sprinklers", Color3.fromRGB(70, 255, 150))
+	local waterBtn = makeButton("Water Plant", Color3.fromRGB(90, 170, 255))
+
+	-- Interactivity Event Connections
+	placeBtn.MouseButton1Click:Connect(function()
+		task.spawn(runPlacementCycle, targetInput.Text)
+	end)
+
+	waterBtn.MouseButton1Click:Connect(function()
+		task.spawn(waterPlant, targetInput.Text)
+	end)
+
+	-- Window Dragging Logic
+	local dragging, dragStart, startPos
+	
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+		end
+	end)
+	
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(
+				startPos.X.Scale, 
+				startPos.X.Offset + delta.X, 
+				startPos.Y.Scale, 
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+	
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+end
+
+-- Initialize UI Panel
+createSimpleUI()
