@@ -41,6 +41,7 @@ local SPRINKLER_TYPES = {
     "Rare Sprinkler",
     "Legendary Sprinkler",
 }
+local SUPER_SPRINKLER_NAME = "Super Sprinkler"
 local WATERING_CAN_NAME = "Super Watering Can"
 local DEFAULT_RADIUS = 3
 local DEFAULT_DELAY = 1
@@ -242,10 +243,25 @@ local function runMaintenanceCycle()
             end
         end
 
-        -- Determine what is missing based on required types
-        for _, sType in ipairs(SPRINKLER_TYPES) do
-            if not activeSprinklers[sType] then
-                table.insert(missingSprinklers, sType)
+        -- OVERRIDE: If the Super Sprinkler is active, we don't need any other sprinklers
+        if activeSprinklers[SUPER_SPRINKLER_NAME] then
+            allVerified = true
+            break
+        end
+
+        -- Check if player owns a Super Sprinkler so we can prioritize placing it
+        local char = getCharacter()
+        local ownsSuperSprinkler = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
+
+        if ownsSuperSprinkler then
+            -- We have the tool but it's not active yet, let's place it.
+            table.insert(missingSprinklers, SUPER_SPRINKLER_NAME)
+        else
+            -- Determine what is missing based on standard required types
+            for _, sType in ipairs(SPRINKLER_TYPES) do
+                if not activeSprinklers[sType] then
+                    table.insert(missingSprinklers, sType)
+                end
             end
         end
 
@@ -257,6 +273,9 @@ local function runMaintenanceCycle()
         -- Place only the missing sprinklers
         for k, missingType in ipairs(missingSprinklers) do
             local angle = (k - 1) * (2 * math.pi / #missingSprinklers)
+            
+            -- If we are only placing 1 sprinkler (like the Super Sprinkler), offset isn't strictly necessary, 
+            -- but the math will cleanly resolve to an offset anyway.
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
             placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
@@ -445,7 +464,7 @@ task.spawn(function()
             while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
             
             if #batchedFruits > 0 then
-                local title = string.format("🌕 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
+                local title = string.format("剣 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
                 local descText = ""
                 
                 for _, f in ipairs(batchedFruits) do
@@ -583,9 +602,9 @@ task.spawn(function()
         local harvestRemaining = harvestQueue:count()
         local shovelRemaining = shovelQueue:count()
         
-        local harvestStr = "🌿 Harvest State: " .. harvestRemaining
-        local shovelStr = "🪓 Shovel State: " .. shovelRemaining
-        local keptStr = "🛡️ Kept Plant: " .. keptCount
+        local harvestStr = "諺 Harvest State: " .. harvestRemaining
+        local shovelStr = "ｪShovel State: " .. shovelRemaining
+        local keptStr = "孱ｸKept Plant: " .. keptCount
         local stateStr = "Status: Idle"
         
         if isAutoFarming then
@@ -593,10 +612,10 @@ task.spawn(function()
                 stateStr = "Status: Fixing Sprinklers..."
             elseif harvestRemaining > 0 then
                 stateStr = "Status: Harvesting..."
-                harvestStr = string.format("🌿 Harvest State: Active (%d left)", harvestRemaining)
+                harvestStr = string.format("諺 Harvest State: Active (%d left)", harvestRemaining)
             elseif shovelRemaining > 0 then
                 stateStr = "Status: Shoveling..."
-                shovelStr = string.format("🪓 Shovel State: Active (%d left)", shovelRemaining)
+                shovelStr = string.format("ｪShovel State: Active (%d left)", shovelRemaining)
             else
                 stateStr = "Status: Processes running in background..."
             end
