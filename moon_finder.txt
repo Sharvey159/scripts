@@ -372,9 +372,9 @@ local function processFruit(fruit, plant)
     
     fruitCache[fruit] = fruitData
     
-    if weight < 75 then
+    if weight < 90 then
         harvestQueue:push(fruitData)
-    elseif weight < 85 then
+    elseif weight < 100 then
         shovelQueue:push(fruitData)
     else
         if not keptFruitCache[id] then
@@ -555,7 +555,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v34"
+title.Text = "Auto-Farm v35"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
