@@ -96,7 +96,7 @@ local keptFruitList = {}
 
 -- Cache Reset Constants
 local completedCycles = 0
-local CYCLE_RESET_THRESHOLD = 5
+local CYCLE_RESET_THRESHOLD = 1
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
