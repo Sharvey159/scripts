@@ -87,7 +87,7 @@ local fruitCache = {}
 local plantConnections = {}   
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
-local delegatedQueue = createQueue() -- New queue for assisted harvest tasks
+local delegatedQueue = createQueue() 
 local webhookQueue = createQueue() 
 
 local keptCount = 0           
@@ -409,7 +409,6 @@ local function setupPlant(plant)
         if data then
             data.Processed = true 
             fruitCache[fruit] = nil
-            -- FIXED: Threshold is now 100 based on processFruit logic
             if data.Weight >= 100 then removeKeptFruitState(data) end
         end
     end)
@@ -432,7 +431,6 @@ local function cleanupPlant(plant)
             if data then
                 data.Processed = true
                 fruitCache[fruit] = nil
-                -- FIXED: Threshold is now 100 based on processFruit logic
                 if data.Weight >= 100 then removeKeptFruitState(data) end
             end
         end
@@ -494,7 +492,9 @@ task.spawn(function()
                 if data and not data.Processed and data.Instance and data.Instance.Parent then
                     data.Processed = true
                     pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                    task.wait(HARVEST_INTERVAL) -- Process at harvest speed to avoid bottlenecking
+                    
+                    -- FIX: Process at normal shovel speed to avoid breaking timings
+                    task.wait(SHOVEL_INTERVAL)
                 end
             else
                 task.wait(0.1)
@@ -611,7 +611,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v36"
+title.Text = "Auto-Farm v35"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
