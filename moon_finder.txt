@@ -63,8 +63,25 @@ local function createQueue()
         first = 1,
         last = 0,
         push = function(self, item)
-            self.last += 1
-            self.items[self.last] = item
+            -- Priority sorting: Normal items jump ahead of Delegated items
+            if item.IsDelegated then
+                self.last += 1
+                self.items[self.last] = item
+            else
+                local insertIdx = self.last + 1
+                for i = self.first, self.last do
+                    if self.items[i] and self.items[i].IsDelegated then
+                        insertIdx = i
+                        break
+                    end
+                end
+                
+                self.last += 1
+                for i = self.last, insertIdx + 1, -1 do
+                    self.items[i] = self.items[i - 1]
+                end
+                self.items[insertIdx] = item
+            end
         end,
         pop = function(self)
             if self.first > self.last then return nil end
@@ -87,7 +104,6 @@ local fruitCache = {}
 local plantConnections = {}   
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
-local delegatedQueue = createQueue() 
 local webhookQueue = createQueue() 
 
 local keptCount = 0           
@@ -373,7 +389,8 @@ local function processFruit(fruit, plant)
         Weight = weight,
         Mutation = mutation,
         Instance = fruit,
-        Processed = false
+        Processed = false,
+        IsDelegated = false -- Defaults to normal
     }
     
     fruitCache[fruit] = fruitData
@@ -468,55 +485,72 @@ task.spawn(function()
     end
 end)
 
--- Worker 2: Shovel Engine (With Fixed Delegation Logic)
+-- Worker 2: Unified Shovel & Delegated Engine
 task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining then
-            -- Shovel Queue > 10: Rebalance by stopping delegated tasks and moving existing ones back
-            if shovelQueue:count() > 10 then
-                while delegatedQueue:count() > 0 do
-                    harvestQueue:push(delegatedQueue:pop())
+            
+            -- Count normal shovel fruits to check against our threshold
+            local normalCount = 0
+            for i = shovelQueue.first, shovelQueue.last do
+                if shovelQueue.items[i] and not shovelQueue.items[i].IsDelegated then
+                    normalCount += 1
                 end
             end
 
-            -- Priority 1: Shovel Queue
+            -- Shovel Queue > 10 normal fruits: Rebalance by moving delegated back to harvest
+            if normalCount > 10 then
+                local newLast = shovelQueue.first - 1
+                for i = shovelQueue.first, shovelQueue.last do
+                    local item = shovelQueue.items[i]
+                    if item then
+                        if item.IsDelegated then
+                            item.IsDelegated = false -- Remove flag so it acts as pure harvest
+                            harvestQueue:push(item)
+                        else
+                            newLast += 1
+                            shovelQueue.items[newLast] = item
+                        end
+                    end
+                end
+                
+                -- Cleanup trailing references
+                for i = newLast + 1, shovelQueue.last do
+                    shovelQueue.items[i] = nil
+                end
+                
+                shovelQueue.last = newLast
+                if shovelQueue.first > shovelQueue.last then
+                    shovelQueue.first = 1
+                    shovelQueue.last = 0
+                end
+            end
+
+            -- Process Queue
             if shovelQueue:count() > 0 then
                 local data = shovelQueue.items[shovelQueue.first] -- Peek
                 if data and not data.Processed and data.Instance and data.Instance.Parent then
                     local tool = getShovelTool()
                     if tool then
                         data.Processed = true
-                        local shovelType = tool:GetAttribute("Shovel")
-                        pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                        
+                        if data.IsDelegated then
+                            -- It's a delegated harvest task. Process as normal harvest but with shovel timing
+                            pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                        else
+                            -- It's a normal shovel task. Process as normal shovel work.
+                            local shovelType = tool:GetAttribute("Shovel")
+                            pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                        end
+                        
                         shovelQueue:pop() -- Pop only after confirming tool and firing
-                        task.wait(SHOVEL_INTERVAL)
+                        task.wait(SHOVEL_INTERVAL) -- Respect standard shovel interval for both to preserve mechanics
                     else
                         -- Tool not ready, wait and keep item in queue
                         task.wait(0.5) 
                     end
                 else
                     shovelQueue:pop() -- Invalid data, discard
-                end
-                
-            -- Priority 2: Assisted Harvest Work (Delegated)
-            elseif delegatedQueue:count() > 0 then
-                local data = delegatedQueue.items[delegatedQueue.first] -- Peek
-                if data and not data.Processed and data.Instance and data.Instance.Parent then
-                    -- Verify worker fully initialized (shovel equipped) before beginning delegated work
-                    local tool = getShovelTool()
-                    if tool then
-                        data.Processed = true
-                        pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                        delegatedQueue:pop() -- Pop only after successful initiation
-                        
-                        -- Process at normal shovel speed to avoid breaking timings
-                        task.wait(SHOVEL_INTERVAL)
-                    else
-                        -- Worker tool acquisition failing, wait and keep item in queue
-                        task.wait(0.5)
-                    end
-                else
-                    delegatedQueue:pop() -- Invalid data, discard
                 end
             else
                 task.wait(0.1)
@@ -552,23 +586,36 @@ task.spawn(function()
     end
 end)
 
--- Worker 4: Main Coordinator & Maintenance Loop (With Cache Reset & Delegation Handler)
+-- Worker 4: Main Coordinator & Maintenance Loop
 task.spawn(function()
     local wasProcessing = false
     while isScriptRunning do
         if isAutoFarming then
             local harvestRemaining = harvestQueue:count()
-            local shovelRemaining = shovelQueue:count()
-            local totalTasks = harvestRemaining + shovelRemaining + delegatedQueue:count()
             
-            -- Feature 2: Dynamic Shovel Delegation (13%)
+            local shovelRemaining = 0
+            local delegatedRemaining = 0
+            for i = shovelQueue.first, shovelQueue.last do
+                if shovelQueue.items[i] then
+                    if shovelQueue.items[i].IsDelegated then
+                        delegatedRemaining += 1
+                    else
+                        shovelRemaining += 1
+                    end
+                end
+            end
+            
+            local totalTasks = harvestRemaining + shovelRemaining + delegatedRemaining
+            
+            -- Dynamic Shovel Delegation (13%)
             -- Prevents delegation if normal shovel tasks exceed 10
-            if shovelRemaining <= 10 and harvestRemaining > 10 and delegatedQueue:count() == 0 then
+            if shovelRemaining <= 10 and harvestRemaining > 10 and delegatedRemaining == 0 then
                 local delegateCount = math.floor(harvestRemaining * 0.13)
                 for i = 1, delegateCount do
                     local item = harvestQueue:pop()
                     if item then
-                        delegatedQueue:push(item)
+                        item.IsDelegated = true
+                        shovelQueue:push(item)
                     end
                 end
             end
@@ -580,7 +627,7 @@ task.spawn(function()
                 wasProcessing = false
                 isMaintaining = true
                 
-                -- Feature 1: Periodic Processed Fruit Cache Reset
+                -- Periodic Processed Fruit Cache Reset
                 completedCycles += 1
                 if completedCycles >= CYCLE_RESET_THRESHOLD then
                     local cleanedCache = {}
@@ -633,7 +680,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v36"
+title.Text = "Auto-Farm v37"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -700,9 +747,22 @@ local keptLbl = createStatusLabel(130)
 task.spawn(function()
     local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
     while isScriptRunning do
+        local delegatedRemaining = 0
+        local shovelRemaining = 0
+        
+        -- Count items in the unified queue
+        for i = shovelQueue.first, shovelQueue.last do
+            if shovelQueue.items[i] then
+                if shovelQueue.items[i].IsDelegated then
+                    delegatedRemaining += 1
+                else
+                    shovelRemaining += 1
+                end
+            end
+        end
+        
         -- Include delegated fruits in the harvest count so the UI number remains consistent
-        local harvestRemaining = harvestQueue:count() + delegatedQueue:count()
-        local shovelRemaining = shovelQueue:count()
+        local harvestRemaining = harvestQueue:count() + delegatedRemaining
         
         local harvestStr = "諺 Harvest State: " .. harvestRemaining
         local shovelStr = "ｪShovel State: " .. shovelRemaining
