@@ -1,3 +1,4 @@
+-- --- SERVICES & REQUIRES ---
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -8,6 +9,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- Attempt to load modules safely
 local FruitVisualizerController = require(player:WaitForChild("PlayerScripts"):WaitForChild("Controllers"):WaitForChild("FruitVisualizerController"))
 local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+-- ============================================================================
+-- CONSTANTS & VARIABLES
+-- ============================================================================
 
 -- 1. Find Plot
 local myPlot
@@ -22,19 +27,35 @@ if not myPlot then
     warn("Couldn't find your plot!")
     return
 end
+local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
 
--- 2. Constants & Variables
+-- Farming Constants
 local SHOVEL_NAME = "Shovel"
 local SHOVEL_INTERVAL = 0.65
 local HARVEST_INTERVAL = 0.1 
 
+-- Sprinkler Constants
+local SPRINKLER_TYPES = {
+    "Common Sprinkler",
+    "Uncommon Sprinkler",
+    "Rare Sprinkler",
+    "Legendary Sprinkler",
+}
+local WATERING_CAN_NAME = "Super Watering Can"
+local DEFAULT_RADIUS = 3
+local DEFAULT_DELAY = 1
+
 local isAutoFarming = false
 local isScriptRunning = true 
+local isMaintaining = false -- Locks farming while sprinklers are checked
 
 -- Webhook Constants
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
 
--- High-Performance O(1) Memory-Stable Queue Structure 
+-- ============================================================================
+-- QUEUES & CACHES
+-- ============================================================================
+
 local function createQueue()
     return {
         items = {},
@@ -49,7 +70,6 @@ local function createQueue()
             local val = self.items[self.first]
             self.items[self.first] = nil
             self.first += 1
-            -- Reset pointers when empty to keep the table array boundary flat and packed
             if self.first > self.last then 
                 self.first = 1
                 self.last = 0
@@ -62,19 +82,20 @@ local function createQueue()
     }
 end
 
--- Central Caches and Queues
-local fruitCache = {}         -- Hash map storage: [Instance] = FruitData
-local plantConnections = {}   -- Track event listeners to clean memory seamlessly: [Instance] = Array of connections
+local fruitCache = {}         
+local plantConnections = {}   
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
+local webhookQueue = createQueue() 
 
--- New Kept Fruit Data Structures
 local keptCount = 0           
-local webhookQueue = createQueue() -- Queue specifically for webhook processing
-local keptFruitCache = {}          -- O(1) cache for kept fruits [FruitId] = true
-local keptFruitList = {}           -- Maintained list of active kept fruits
+local keptFruitCache = {}          
+local keptFruitList = {}           
 
--- Webhook Utility Function
+-- ============================================================================
+-- UTILITY FUNCTIONS
+-- ============================================================================
+
 local function sendWebhook(title, body, color)
     task.spawn(function()
         pcall(function()
@@ -83,21 +104,388 @@ local function sendWebhook(title, body, color)
                 Method = "POST",
                 Headers = { ["Content-Type"] = "application/json" },
                 Body = HttpService:JSONEncode({
-                    embeds = {
-                        {
-                            title = title,
-                            description = body,
-                            color = color or 3447003,
-                            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-                        },
-                    },
+                    embeds = {{
+                        title = title,
+                        description = body,
+                        color = color or 3447003,
+                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    }},
                 }),
             })
         end)
     end)
 end
 
--- 3. Build UI
+local function getCharacter()
+    return player.Character or player.CharacterAdded:Wait()
+end
+
+local cachedShovelInstance = nil
+local function getShovelTool()
+    local character = player.Character
+    if not character then return nil end
+    
+    if cachedShovelInstance and cachedShovelInstance.Parent == character then
+        return cachedShovelInstance
+    end
+    
+    local tool = character:FindFirstChild(SHOVEL_NAME)
+    if tool then
+        cachedShovelInstance = tool
+        return tool
+    end
+    
+    tool = player.Backpack:FindFirstChild(SHOVEL_NAME)
+    if tool then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:EquipTool(tool)
+            cachedShovelInstance = tool
+            return tool
+        end
+    end
+    
+    return nil
+end
+
+local function equipTool(toolName)
+    local char = getCharacter()
+    local tool = player.Backpack:FindFirstChild(toolName) or char:FindFirstChild(toolName)
+    if not tool then return nil end
+    
+    if tool.Parent ~= char then
+        local humanoid = char:FindFirstChild("Humanoid")
+        if humanoid then 
+            humanoid:EquipTool(tool) 
+        end
+        
+        local deadline = tick() + 2
+        repeat task.wait() until tool.Parent == char or tick() > deadline
+        task.wait(0.1)
+    end
+    return tool
+end
+
+local function getPlantPosition(plant)
+    if not plant then return nil end
+    if plant:IsA("Model") and plant.PrimaryPart then return plant.PrimaryPart.Position end
+    
+    local ok, pivot = pcall(function() return plant:GetPivot() end)
+    if ok and pivot then return pivot.Position end
+    if plant:IsA("BasePart") then return plant.Position end
+    
+    for _, child in ipairs(plant:GetDescendants()) do
+        if child:IsA("BasePart") then return child.Position end
+    end
+    return nil
+end
+
+local function getFirstAvailablePlant()
+    local plantsFolder = myPlot:FindFirstChild("Plants")
+    if not plantsFolder then return nil end
+    
+    local plants = plantsFolder:GetChildren()
+    for _, plant in ipairs(plants) do
+        if getPlantPosition(plant) then return plant end
+    end
+    return plants[1]
+end
+
+local function raycastToGround(position)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { getCharacter() }
+    
+    local origin = position + Vector3.new(0, 15, 0)
+    local direction = Vector3.new(0, -100, 0)
+    local result = workspace:Raycast(origin, direction, params)
+    
+    return result and result.Position or position
+end
+
+local function placeSprinklerAt(position, sprinklerName, plotId)
+    local tool = equipTool(sprinklerName)
+    if not tool then return false end
+    
+    local groundPosition = raycastToGround(position)
+    pcall(function()
+        Networking.Place.PlaceSprinkler:Fire(groundPosition, sprinklerName, tool, plotId)
+    end)
+    return true
+end
+
+-- ============================================================================
+-- SPRINKLER MAINTENANCE LOGIC
+-- ============================================================================
+
+local function runMaintenanceCycle()
+    local sprinklersFolder = myPlot:FindFirstChild("Sprinklers")
+    if not sprinklersFolder then return end
+
+    local targetPlant = getFirstAvailablePlant()
+    local centerPosition = targetPlant and getPlantPosition(targetPlant)
+
+    if not centerPosition then return end
+
+    local allVerified = false
+
+    -- Verification Loop
+    while not allVerified and isScriptRunning do
+        local activeSprinklers = {}
+        local missingSprinklers = {}
+        
+        -- Map out active sprinklers via Attribute
+        for _, sprinkler in ipairs(sprinklersFolder:GetChildren()) do
+            local sName = sprinkler:GetAttribute("Sprinkle Name")
+            if sName then
+                activeSprinklers[sName] = true
+            end
+        end
+
+        -- Determine what is missing based on required types
+        for _, sType in ipairs(SPRINKLER_TYPES) do
+            if not activeSprinklers[sType] then
+                table.insert(missingSprinklers, sType)
+            end
+        end
+
+        if #missingSprinklers == 0 then
+            allVerified = true
+            break
+        end
+
+        -- Place only the missing sprinklers
+        for k, missingType in ipairs(missingSprinklers) do
+            local angle = (k - 1) * (2 * math.pi / #missingSprinklers)
+            local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
+            
+            placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
+            task.wait(DEFAULT_DELAY)
+        end
+        
+        -- Yield momentarily to allow server replication before re-verifying
+        task.wait(1.5)
+    end
+
+    -- Finish by Watering the target plant
+    if allVerified then
+        local waterTool = equipTool(WATERING_CAN_NAME)
+        if waterTool then
+            pcall(function()
+                Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool)
+            end)
+        end
+    end
+end
+
+-- ============================================================================
+-- EVENT REACTIVITY
+-- ============================================================================
+
+local function removeKeptFruitState(data)
+    if not data.FruitId then return end
+    if keptFruitCache[data.FruitId] then
+        keptFruitCache[data.FruitId] = nil
+        keptCount -= 1
+        
+        for i, f in ipairs(keptFruitList) do
+            if f.FruitId == data.FruitId then
+                table.remove(keptFruitList, i)
+                break
+            end
+        end
+    end
+end
+
+local function processFruit(fruit, plant)
+    if not fruit or fruitCache[fruit] then return end
+    
+    local name = fruit:GetAttribute("CorePartName")
+    local id = fruit:GetAttribute("FruitId")
+    if not id or not name then return end
+    
+    local plantId = plant:GetAttribute("PlantId") or plant.Name
+    if not plantId then return end
+    
+    local mutation = fruit:GetAttribute("Mutation")
+    if not mutation or mutation == "" then
+        mutation = "None"
+    end
+    
+    local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
+    if not weight and FruitVisualizerController.CalculatePlantWeight then
+        weight = FruitVisualizerController:CalculatePlantWeight(fruit)
+    end
+    weight = tonumber(weight) or 0
+    
+    local fruitData = {
+        PlantId = plantId,
+        FruitId = id,
+        Name = name,
+        Weight = weight,
+        Mutation = mutation,
+        Instance = fruit,
+        Processed = false
+    }
+    
+    fruitCache[fruit] = fruitData
+    
+    if weight < 60 then
+        harvestQueue:push(fruitData)
+    elseif weight < 70 then
+        shovelQueue:push(fruitData)
+    else
+        if not keptFruitCache[id] then
+            keptFruitCache[id] = true
+            keptCount += 1
+            
+            table.insert(keptFruitList, fruitData)
+            table.sort(keptFruitList, function(a, b) return a.Weight > b.Weight end)
+            webhookQueue:push(fruitData)
+        end
+    end
+end
+
+local function setupPlant(plant)
+    if plantConnections[plant] then return end
+    plantConnections[plant] = {}
+    
+    local fruitsFolder = plant:WaitForChild("Fruits", 5)
+    if not fruitsFolder then return end
+    
+    for _, fruit in ipairs(fruitsFolder:GetChildren()) do processFruit(fruit, plant) end
+    
+    local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) task.defer(processFruit, fruit, plant) end)
+    local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
+        local data = fruitCache[fruit]
+        if data then
+            data.Processed = true 
+            fruitCache[fruit] = nil
+            if data.Weight >= 60 then removeKeptFruitState(data) end
+        end
+    end)
+    
+    table.insert(plantConnections[plant], addedConn)
+    table.insert(plantConnections[plant], removedConn)
+end
+
+local function cleanupPlant(plant)
+    local conns = plantConnections[plant]
+    if conns then
+        for _, conn in ipairs(conns) do conn:Disconnect() end
+        plantConnections[plant] = nil
+    end
+    
+    local fruitsFolder = plant:FindFirstChild("Fruits")
+    if fruitsFolder then
+        for _, fruit in ipairs(fruitsFolder:GetChildren()) do
+            local data = fruitCache[fruit]
+            if data then
+                data.Processed = true
+                fruitCache[fruit] = nil
+                if data.Weight >= 60 then removeKeptFruitState(data) end
+            end
+        end
+    end
+end
+
+for _, plant in ipairs(myPlot.Plants:GetChildren()) do setupPlant(plant) end
+local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
+local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
+
+-- ============================================================================
+-- CONSUMER THREADS
+-- ============================================================================
+
+-- Worker 1: Harvest Engine
+task.spawn(function()
+    while isScriptRunning do
+        if isAutoFarming and not isMaintaining and harvestQueue:count() > 0 then
+            local data = harvestQueue:pop()
+            if data and not data.Processed and data.Instance and data.Instance.Parent then
+                data.Processed = true
+                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                task.wait(HARVEST_INTERVAL)
+            end
+        else
+            task.wait(0.1) 
+        end
+    end
+end)
+
+-- Worker 2: Shovel Engine
+task.spawn(function()
+    while isScriptRunning do
+        if isAutoFarming and not isMaintaining and shovelQueue:count() > 0 then
+            local data = shovelQueue:pop()
+            if data and not data.Processed and data.Instance and data.Instance.Parent then
+                local tool = getShovelTool()
+                if tool then
+                    data.Processed = true
+                    local shovelType = tool:GetAttribute("Shovel")
+                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                    task.wait(SHOVEL_INTERVAL)
+                else
+                    shovelQueue:push(data)
+                    task.wait(0.5) 
+                end
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 3: Webhook Batching Engine
+task.spawn(function()
+    while isScriptRunning do
+        if webhookQueue:count() > 0 then
+            task.wait(2) 
+            local batchedFruits = {}
+            while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
+            
+            if #batchedFruits > 0 then
+                local title = string.format("🌕 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
+                local descText = ""
+                
+                for _, f in ipairs(batchedFruits) do
+                    descText ..= string.format("+ %s\n  %.2fkg\n  %s\n\n", f.Name, f.Weight, f.Mutation)
+                end
+                descText ..= string.format("**Total Kept:** %d", keptCount)
+                sendWebhook(title, descText, 16766720) 
+                task.wait(0.5)
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 4: Main Coordinator & Maintenance Loop
+task.spawn(function()
+    local wasProcessing = false
+    while isScriptRunning do
+        if isAutoFarming then
+            local totalTasks = harvestQueue:count() + shovelQueue:count()
+            
+            if totalTasks > 0 then
+                wasProcessing = true
+            elseif wasProcessing and totalTasks == 0 then
+                -- Harvesting cycle is complete. Lock routines and execute maintenance
+                wasProcessing = false
+                isMaintaining = true
+                runMaintenanceCycle()
+                isMaintaining = false
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- ============================================================================
+-- MINIMAL UI 
+-- ============================================================================
+
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AdminPanel"
 screenGui.ResetOnSpawn = false
@@ -125,7 +513,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v29"
+title.Text = "Auto-Farm v31"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -188,263 +576,9 @@ local harvestLbl = createStatusLabel(80)
 local shovelLbl = createStatusLabel(105)
 local keptLbl = createStatusLabel(130)
 
-stateLbl.Text = "Status: Idle"
-harvestLbl.Text = "🌿 Harvest State: 0"
-shovelLbl.Text = "🪓 Shovel State: 0"
-keptLbl.Text = "🛡️ Kept Plant: 0"
-
--- 4. Shared Utilities & Caching Lookups
-local cachedShovelInstance = nil
-local function getShovelTool()
-    local character = player.Character
-    if not character then return nil end
-    
-    if cachedShovelInstance and cachedShovelInstance.Parent == character then
-        return cachedShovelInstance
-    end
-    
-    local tool = character:FindFirstChild(SHOVEL_NAME)
-    if tool then
-        cachedShovelInstance = tool
-        return tool
-    end
-    
-    tool = player.Backpack:FindFirstChild(SHOVEL_NAME)
-    if tool then
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid:EquipTool(tool)
-            cachedShovelInstance = tool
-            return tool
-        end
-    end
-    
-    return nil
-end
-
--- 5. Reactive Event System (Producer Core)
-local function processFruit(fruit, plant)
-    if not fruit or fruitCache[fruit] then return end
-    
-    local name = fruit:GetAttribute("CorePartName")
-    local id = fruit:GetAttribute("FruitId")
-    if not id or not name then return end
-    
-    local plantId = plant:GetAttribute("PlantId") or plant.Name
-    if not plantId then return end
-    
-    local mutation = fruit:GetAttribute("Mutation")
-    if not mutation or mutation == "" then
-        mutation = "None"
-    end
-    
-    local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
-    if not weight and FruitVisualizerController.CalculatePlantWeight then
-        weight = FruitVisualizerController:CalculatePlantWeight(fruit)
-    end
-    weight = tonumber(weight) or 0
-    
-    local fruitData = {
-        PlantId = plantId,
-        FruitId = id,
-        Name = name,
-        Weight = weight,
-        Mutation = mutation,
-        Instance = fruit,
-        Processed = false
-    }
-    
-    fruitCache[fruit] = fruitData
-    
-    if weight < 60 then
-        harvestQueue:push(fruitData)
-    elseif weight < 70 then
-        shovelQueue:push(fruitData)
-    else
-        -- Check cache for duplicate protection
-        if not keptFruitCache[id] then
-            keptFruitCache[id] = true
-            keptCount += 1
-            
-            -- Insert and sort kept array in place
-            table.insert(keptFruitList, fruitData)
-            table.sort(keptFruitList, function(a, b)
-                return a.Weight > b.Weight
-            end)
-            
-            -- Dispatch to webhook worker
-            webhookQueue:push(fruitData)
-        end
-    end
-end
-
--- Cleanup Utility for Kept Fruits
-local function removeKeptFruitState(data)
-    if not data.FruitId then return end
-    if keptFruitCache[data.FruitId] then
-        keptFruitCache[data.FruitId] = nil
-        keptCount -= 1
-        
-        -- Clean out from sorted list (O(n) but tiny list)
-        for i, f in ipairs(keptFruitList) do
-            if f.FruitId == data.FruitId then
-                table.remove(keptFruitList, i)
-                break
-            end
-        end
-    end
-end
-
-local function setupPlant(plant)
-    if plantConnections[plant] then return end
-    plantConnections[plant] = {}
-    
-    local fruitsFolder = plant:WaitForChild("Fruits", 5)
-    if not fruitsFolder then return end
-    
-    for _, fruit in ipairs(fruitsFolder:GetChildren()) do
-        processFruit(fruit, plant)
-    end
-    
-    local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit)
-        task.defer(processFruit, fruit, plant)
-    end)
-    
-    local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
-        local data = fruitCache[fruit]
-        if data then
-            data.Processed = true 
-            fruitCache[fruit] = nil
-            
-            -- Ensure it is removed from active kept pool if it was high weight
-            if data.Weight >= 60 then
-                removeKeptFruitState(data)
-            end
-        end
-    end)
-    
-    table.insert(plantConnections[plant], addedConn)
-    table.insert(plantConnections[plant], removedConn)
-end
-
-local function cleanupPlant(plant)
-    local conns = plantConnections[plant]
-    if conns then
-        for _, conn in ipairs(conns) do
-            conn:Disconnect()
-        end
-        plantConnections[plant] = nil
-    end
-    
-    local fruitsFolder = plant:FindFirstChild("Fruits")
-    if fruitsFolder then
-        for _, fruit in ipairs(fruitsFolder:GetChildren()) do
-            local data = fruitCache[fruit]
-            if data then
-                data.Processed = true
-                fruitCache[fruit] = nil
-                
-                if data.Weight >= 60 then
-                    removeKeptFruitState(data)
-                end
-            end
-        end
-    end
-end
-
--- Connect Lifecycle Observers to the Plot
-for _, plant in ipairs(myPlot.Plants:GetChildren()) do
-    setupPlant(plant)
-end
-
-local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
-local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
-
-
--- 6. Consumer Threads (FPS-Independent Execution workers)
-
--- Worker 1: Harvest Engine
-task.spawn(function()
-    while isScriptRunning do
-        if isAutoFarming and harvestQueue:count() > 0 then
-            local data = harvestQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
-                data.Processed = true
-                pcall(function()
-                    Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "")
-                end)
-                task.wait(HARVEST_INTERVAL)
-            end
-        else
-            task.wait(0.1) 
-        end
-    end
-end)
-
--- Worker 2: Shovel Engine
-task.spawn(function()
-    while isScriptRunning do
-        if isAutoFarming and shovelQueue:count() > 0 then
-            local data = shovelQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
-                local tool = getShovelTool()
-                if tool then
-                    data.Processed = true
-                    local shovelType = tool:GetAttribute("Shovel")
-                    pcall(function()
-                        Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool)
-                    end)
-                    task.wait(SHOVEL_INTERVAL)
-                else
-                    shovelQueue:push(data)
-                    task.wait(0.5) 
-                end
-            end
-        else
-            task.wait(0.1)
-        end
-    end
-end)
-
--- Worker 3: Webhook Batching Engine (NEW)
-task.spawn(function()
-    while isScriptRunning do
-        if webhookQueue:count() > 0 then
-            -- Initial wait for batched arrivals (e.g., plot load or fast growths)
-            task.wait(2) 
-            
-            local batchedFruits = {}
-            while webhookQueue:count() > 0 do
-                table.insert(batchedFruits, webhookQueue:pop())
-            end
-            
-            if #batchedFruits > 0 then
-                -- Construct summary payload
-                local title = string.format("🌕 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
-                local descText = ""
-                
-                for _, f in ipairs(batchedFruits) do
-                    descText ..= string.format("+ %s\n  %.2fkg\n  %s\n\n", f.Name, f.Weight, f.Mutation)
-                end
-                
-                descText ..= string.format("**Total Kept:** %d", keptCount)
-                
-                -- Send the webhook to the URL
-                sendWebhook(title, descText, 16766720) -- Gold/Yellow embed color
-                
-                -- Strict cooldown to avoid Discord API drops
-                task.wait(0.5)
-            end
-        else
-            task.wait(0.1)
-        end
-    end
-end)
-
--- Worker 4: UI Throttle & Virtual Text State Caching
+-- UI Throttle Worker
 task.spawn(function()
     local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
-    
     while isScriptRunning do
         local harvestRemaining = harvestQueue:count()
         local shovelRemaining = shovelQueue:count()
@@ -455,7 +589,9 @@ task.spawn(function()
         local stateStr = "Status: Idle"
         
         if isAutoFarming then
-            if harvestRemaining > 0 then
+            if isMaintaining then
+                stateStr = "Status: Fixing Sprinklers..."
+            elseif harvestRemaining > 0 then
                 stateStr = "Status: Harvesting..."
                 harvestStr = string.format("🌿 Harvest State: Active (%d left)", harvestRemaining)
             elseif shovelRemaining > 0 then
@@ -477,8 +613,6 @@ task.spawn(function()
     end
 end)
 
-
--- 7. Interface Button Wiring
 autoToggleBtn.MouseButton1Click:Connect(function()
     isAutoFarming = not isAutoFarming
     if isAutoFarming then
