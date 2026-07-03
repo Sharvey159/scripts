@@ -448,20 +448,27 @@ local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 -- Worker 1: Harvest Engine
 task.spawn(function()
     while isScriptRunning do
-        if isAutoFarming and not isMaintaining and harvestQueue:count() > 0 then
-            local data = harvestQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
-                data.Processed = true
-                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                task.wait(HARVEST_INTERVAL)
+        if isAutoFarming and not isMaintaining then
+            if harvestQueue:count() > 0 then
+                local data = harvestQueue.items[harvestQueue.first] -- Peek
+                if data and not data.Processed and data.Instance and data.Instance.Parent then
+                    data.Processed = true
+                    pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                    harvestQueue:pop() -- Pop only after successfully processing
+                    task.wait(HARVEST_INTERVAL)
+                else
+                    harvestQueue:pop() -- Invalid or already processed data, discard
+                end
+            else
+                task.wait(0.1) 
             end
         else
-            task.wait(0.1) 
+            task.wait(0.1)
         end
     end
 end)
 
--- Worker 2: Shovel Engine (With Delegation Logic)
+-- Worker 2: Shovel Engine (With Fixed Delegation Logic)
 task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining then
@@ -472,29 +479,44 @@ task.spawn(function()
                 end
             end
 
+            -- Priority 1: Shovel Queue
             if shovelQueue:count() > 0 then
-                local data = shovelQueue:pop()
+                local data = shovelQueue.items[shovelQueue.first] -- Peek
                 if data and not data.Processed and data.Instance and data.Instance.Parent then
                     local tool = getShovelTool()
                     if tool then
                         data.Processed = true
                         local shovelType = tool:GetAttribute("Shovel")
                         pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                        shovelQueue:pop() -- Pop only after confirming tool and firing
                         task.wait(SHOVEL_INTERVAL)
                     else
-                        shovelQueue:push(data)
+                        -- Tool not ready, wait and keep item in queue
                         task.wait(0.5) 
                     end
+                else
+                    shovelQueue:pop() -- Invalid data, discard
                 end
+                
+            -- Priority 2: Assisted Harvest Work (Delegated)
             elseif delegatedQueue:count() > 0 then
-                -- Assisted Harvest Work
-                local data = delegatedQueue:pop()
+                local data = delegatedQueue.items[delegatedQueue.first] -- Peek
                 if data and not data.Processed and data.Instance and data.Instance.Parent then
-                    data.Processed = true
-                    pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                    
-                    -- FIX: Process at normal shovel speed to avoid breaking timings
-                    task.wait(SHOVEL_INTERVAL)
+                    -- Verify worker fully initialized (shovel equipped) before beginning delegated work
+                    local tool = getShovelTool()
+                    if tool then
+                        data.Processed = true
+                        pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                        delegatedQueue:pop() -- Pop only after successful initiation
+                        
+                        -- Process at normal shovel speed to avoid breaking timings
+                        task.wait(SHOVEL_INTERVAL)
+                    else
+                        -- Worker tool acquisition failing, wait and keep item in queue
+                        task.wait(0.5)
+                    end
+                else
+                    delegatedQueue:pop() -- Invalid data, discard
                 end
             else
                 task.wait(0.1)
@@ -611,7 +633,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v35"
+title.Text = "Auto-Farm v36"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
