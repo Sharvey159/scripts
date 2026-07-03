@@ -87,11 +87,16 @@ local fruitCache = {}
 local plantConnections = {}   
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
+local delegatedQueue = createQueue() -- New queue for assisted harvest tasks
 local webhookQueue = createQueue() 
 
 local keptCount = 0           
 local keptFruitCache = {}          
 local keptFruitList = {}           
+
+-- Cache Reset Constants
+local completedCycles = 0
+local CYCLE_RESET_THRESHOLD = 5
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
@@ -286,9 +291,10 @@ local function runMaintenanceCycle()
         -- Failsafe flag to catch empty placement attempts
         local toolsSuccessfullyPlaced = 0
 
-        -- Place only the missing sprinklers
+        -- Place only the missing sprinklers in an Octagonal pattern
         for k, missingType in ipairs(missingSprinklers) do
-            local angle = (k - 1) * (2 * math.pi / #missingSprinklers)
+            -- Divide by 8 for a regular octagon layout
+            local angle = (k - 1) * (2 * math.pi / 8)
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
             local success = placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
@@ -403,7 +409,8 @@ local function setupPlant(plant)
         if data then
             data.Processed = true 
             fruitCache[fruit] = nil
-            if data.Weight >= 60 then removeKeptFruitState(data) end
+            -- FIXED: Threshold is now 100 based on processFruit logic
+            if data.Weight >= 100 then removeKeptFruitState(data) end
         end
     end)
     
@@ -425,7 +432,8 @@ local function cleanupPlant(plant)
             if data then
                 data.Processed = true
                 fruitCache[fruit] = nil
-                if data.Weight >= 60 then removeKeptFruitState(data) end
+                -- FIXED: Threshold is now 100 based on processFruit logic
+                if data.Weight >= 100 then removeKeptFruitState(data) end
             end
         end
     end
@@ -455,22 +463,41 @@ task.spawn(function()
     end
 end)
 
--- Worker 2: Shovel Engine
+-- Worker 2: Shovel Engine (With Delegation Logic)
 task.spawn(function()
     while isScriptRunning do
-        if isAutoFarming and not isMaintaining and shovelQueue:count() > 0 then
-            local data = shovelQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
-                local tool = getShovelTool()
-                if tool then
-                    data.Processed = true
-                    local shovelType = tool:GetAttribute("Shovel")
-                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
-                    task.wait(SHOVEL_INTERVAL)
-                else
-                    shovelQueue:push(data)
-                    task.wait(0.5) 
+        if isAutoFarming and not isMaintaining then
+            -- Shovel Queue > 10: Rebalance by stopping delegated tasks and moving existing ones back
+            if shovelQueue:count() > 10 then
+                while delegatedQueue:count() > 0 do
+                    harvestQueue:push(delegatedQueue:pop())
                 end
+            end
+
+            if shovelQueue:count() > 0 then
+                local data = shovelQueue:pop()
+                if data and not data.Processed and data.Instance and data.Instance.Parent then
+                    local tool = getShovelTool()
+                    if tool then
+                        data.Processed = true
+                        local shovelType = tool:GetAttribute("Shovel")
+                        pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                        task.wait(SHOVEL_INTERVAL)
+                    else
+                        shovelQueue:push(data)
+                        task.wait(0.5) 
+                    end
+                end
+            elseif delegatedQueue:count() > 0 then
+                -- Assisted Harvest Work
+                local data = delegatedQueue:pop()
+                if data and not data.Processed and data.Instance and data.Instance.Parent then
+                    data.Processed = true
+                    pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                    task.wait(HARVEST_INTERVAL) -- Process at harvest speed to avoid bottlenecking
+                end
+            else
+                task.wait(0.1)
             end
         else
             task.wait(0.1)
@@ -487,7 +514,7 @@ task.spawn(function()
             while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
             
             if #batchedFruits > 0 then
-                local title = string.format("🌕 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
+                local title = string.format("剣 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
                 local descText = ""
                 
                 for _, f in ipairs(batchedFruits) do
@@ -503,19 +530,48 @@ task.spawn(function()
     end
 end)
 
--- Worker 4: Main Coordinator & Maintenance Loop
+-- Worker 4: Main Coordinator & Maintenance Loop (With Cache Reset & Delegation Handler)
 task.spawn(function()
     local wasProcessing = false
     while isScriptRunning do
         if isAutoFarming then
-            local totalTasks = harvestQueue:count() + shovelQueue:count()
+            local harvestRemaining = harvestQueue:count()
+            local shovelRemaining = shovelQueue:count()
+            local totalTasks = harvestRemaining + shovelRemaining + delegatedQueue:count()
             
+            -- Feature 2: Dynamic Shovel Delegation (13%)
+            -- Prevents delegation if normal shovel tasks exceed 10
+            if shovelRemaining <= 10 and harvestRemaining > 10 and delegatedQueue:count() == 0 then
+                local delegateCount = math.floor(harvestRemaining * 0.13)
+                for i = 1, delegateCount do
+                    local item = harvestQueue:pop()
+                    if item then
+                        delegatedQueue:push(item)
+                    end
+                end
+            end
+
             if totalTasks > 0 then
                 wasProcessing = true
             elseif wasProcessing and totalTasks == 0 then
                 -- Harvesting cycle is complete. Lock routines and execute maintenance
                 wasProcessing = false
                 isMaintaining = true
+                
+                -- Feature 1: Periodic Processed Fruit Cache Reset
+                completedCycles += 1
+                if completedCycles >= CYCLE_RESET_THRESHOLD then
+                    local cleanedCache = {}
+                    for fruit, data in pairs(fruitCache) do
+                        -- Retain only unprocessed fruits that still exist in the workspace
+                        if data.Instance and data.Instance.Parent and not data.Processed then
+                            cleanedCache[fruit] = data
+                        end
+                    end
+                    fruitCache = cleanedCache
+                    completedCycles = 0
+                end
+
                 runMaintenanceCycle()
                 isMaintaining = false
             end
@@ -555,7 +611,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v35"
+title.Text = "Auto-Farm v36"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -622,12 +678,13 @@ local keptLbl = createStatusLabel(130)
 task.spawn(function()
     local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
     while isScriptRunning do
-        local harvestRemaining = harvestQueue:count()
+        -- Include delegated fruits in the harvest count so the UI number remains consistent
+        local harvestRemaining = harvestQueue:count() + delegatedQueue:count()
         local shovelRemaining = shovelQueue:count()
         
-        local harvestStr = "🌿 Harvest State: " .. harvestRemaining
-        local shovelStr = "🪓 Shovel State: " .. shovelRemaining
-        local keptStr = "🛡️ Kept Plant: " .. keptCount
+        local harvestStr = "諺 Harvest State: " .. harvestRemaining
+        local shovelStr = "ｪShovel State: " .. shovelRemaining
+        local keptStr = "孱ｸKept Plant: " .. keptCount
         local stateStr = "Status: Idle"
         
         if isAutoFarming then
@@ -635,10 +692,10 @@ task.spawn(function()
                 stateStr = "Status: Fixing Sprinklers..."
             elseif harvestRemaining > 0 then
                 stateStr = "Status: Harvesting..."
-                harvestStr = string.format("🌿 Harvest State: Active (%d left)", harvestRemaining)
+                harvestStr = string.format("諺 Harvest State: Active (%d left)", harvestRemaining)
             elseif shovelRemaining > 0 then
                 stateStr = "Status: Shoveling..."
-                shovelStr = string.format("🪓 Shovel State: Active (%d left)", shovelRemaining)
+                shovelStr = string.format("ｪShovel State: Active (%d left)", shovelRemaining)
             else
                 stateStr = "Status: Processes running in background..."
             end
