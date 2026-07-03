@@ -201,7 +201,6 @@ local function getPlayerGroundHeight()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = { char }
     
-    -- Raycast down from the player to find the exact ground level
     local origin = root.Position
     local direction = Vector3.new(0, -100, 0)
     local result = workspace:Raycast(origin, direction, params)
@@ -213,7 +212,6 @@ local function placeSprinklerAt(position, sprinklerName, plotId)
     local tool = equipTool(sprinklerName)
     if not tool then return false end
     
-    -- Pass the calculated position directly to the server without further raycasting
     pcall(function()
         Networking.Place.PlaceSprinkler:Fire(position, sprinklerName, tool, plotId)
     end)
@@ -233,7 +231,6 @@ local function runMaintenanceCycle()
 
     if not plantPos then return end
     
-    -- Construct the new placement center using the plant's X/Z and the player's ground Y
     local groundY = getPlayerGroundHeight()
     local centerPosition = Vector3.new(plantPos.X, groundY, plantPos.Z)
 
@@ -242,31 +239,43 @@ local function runMaintenanceCycle()
     -- Verification Loop
     while not allVerified and isScriptRunning do
         local activeSprinklers = {}
-        local missingSprinklers = {}
         
-        -- Map out active sprinklers via Attribute
+        -- Map out active sprinklers using the exact attribute name
         for _, sprinkler in ipairs(sprinklersFolder:GetChildren()) do
-            local sName = sprinkler:GetAttribute("Sprinkle Name")
+            local sName = sprinkler:GetAttribute("SprinklerName") or sprinkler.Name
             if sName then
                 activeSprinklers[sName] = true
             end
         end
 
-        -- OVERRIDE: If the Super Sprinkler is active, we don't need any other sprinklers
+        -- Condition 1: Super Sprinkler is active
         if activeSprinklers[SUPER_SPRINKLER_NAME] then
             allVerified = true
             break
         end
 
-        -- Check if player owns a Super Sprinkler so we can prioritize placing it
+        -- Condition 2: All four standard sprinklers are active
+        local hasAllStandard = true
+        for _, sType in ipairs(SPRINKLER_TYPES) do
+            if not activeSprinklers[sType] then
+                hasAllStandard = false
+                break
+            end
+        end
+
+        if hasAllStandard then
+            allVerified = true
+            break
+        end
+
+        -- Determine what is missing
+        local missingSprinklers = {}
         local char = getCharacter()
         local ownsSuperSprinkler = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
 
         if ownsSuperSprinkler then
-            -- We have the tool but it's not active yet, let's place it.
             table.insert(missingSprinklers, SUPER_SPRINKLER_NAME)
         else
-            -- Determine what is missing based on standard required types
             for _, sType in ipairs(SPRINKLER_TYPES) do
                 if not activeSprinklers[sType] then
                     table.insert(missingSprinklers, sType)
@@ -274,34 +283,39 @@ local function runMaintenanceCycle()
             end
         end
 
-        if #missingSprinklers == 0 then
-            allVerified = true
-            break
-        end
+        -- Failsafe flag to catch empty placement attempts
+        local toolsSuccessfullyPlaced = 0
 
         -- Place only the missing sprinklers
         for k, missingType in ipairs(missingSprinklers) do
             local angle = (k - 1) * (2 * math.pi / #missingSprinklers)
-            
-            -- If we are only placing 1 sprinkler (like the Super Sprinkler), offset isn't strictly necessary, 
-            -- but the math will cleanly resolve to an offset anyway.
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
-            placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
-            task.wait(DEFAULT_DELAY)
+            local success = placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
+            if success then
+                toolsSuccessfullyPlaced += 1
+                task.wait(DEFAULT_DELAY)
+            end
         end
         
         -- Yield momentarily to allow server replication before re-verifying
-        task.wait(1.5)
+        task.wait(2)
+
+        -- Failsafe: if we needed to place tools but failed to equip/place ANY of them, break to prevent infinite loop.
+        if toolsSuccessfullyPlaced == 0 and not allVerified then
+            warn("Sprinklers are missing, but no valid tools were found to place. Exiting maintenance to prevent softlock.")
+            break 
+        end
     end
 
-    -- Finish by Watering the target plant using the new center position
+    -- Finish by Watering the target plant
     if allVerified then
         local waterTool = equipTool(WATERING_CAN_NAME)
         if waterTool then
             pcall(function()
                 Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool)
             end)
+            task.wait(0.5) -- Buffer for watering to complete
         end
     end
 end
@@ -541,7 +555,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v32"
+title.Text = "Auto-Farm v34"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -586,97 +600,4 @@ autoToggleBtn.TextColor3 = Color3.new(1, 1, 1)
 autoToggleBtn.Parent = content
 Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
 
-local function createStatusLabel(yPos)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -20, 0, 20)
-    lbl.Position = UDim2.new(0, 12, 0, yPos)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = 13
-    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = content
-    return lbl
-end
-
-local stateLbl = createStatusLabel(55)
-local harvestLbl = createStatusLabel(80)
-local shovelLbl = createStatusLabel(105)
-local keptLbl = createStatusLabel(130)
-
--- UI Throttle Worker
-task.spawn(function()
-    local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
-    while isScriptRunning do
-        local harvestRemaining = harvestQueue:count()
-        local shovelRemaining = shovelQueue:count()
-        
-        local harvestStr = "🌿 Harvest State: " .. harvestRemaining
-        local shovelStr = "🪓 Shovel State: " .. shovelRemaining
-        local keptStr = "🛡️ Kept Plant: " .. keptCount
-        local stateStr = "Status: Idle"
-        
-        if isAutoFarming then
-            if isMaintaining then
-                stateStr = "Status: Fixing Sprinklers..."
-            elseif harvestRemaining > 0 then
-                stateStr = "Status: Harvesting..."
-                harvestStr = string.format("🌿 Harvest State: Active (%d left)", harvestRemaining)
-            elseif shovelRemaining > 0 then
-                stateStr = "Status: Shoveling..."
-                shovelStr = string.format("🪓 Shovel State: Active (%d left)", shovelRemaining)
-            else
-                stateStr = "Status: Processes running in background..."
-            end
-        else
-            stateStr = "Status: Idle (Paused)"
-        end
-        
-        if stateStr ~= lastStateText then lastStateText = stateStr stateLbl.Text = stateStr end
-        if harvestStr ~= lastHarvestText then lastHarvestText = harvestStr harvestLbl.Text = harvestStr end
-        if shovelStr ~= lastShovelText then lastShovelText = shovelStr shovelLbl.Text = shovelStr end
-        if keptStr ~= lastKeptText then lastKeptText = keptStr keptLbl.Text = keptStr end
-        
-        task.wait(0.3) 
-    end
-end)
-
-autoToggleBtn.MouseButton1Click:Connect(function()
-    isAutoFarming = not isAutoFarming
-    if isAutoFarming then
-        autoToggleBtn.Text = "Auto-Farm: ON"
-        autoToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-    else
-        autoToggleBtn.Text = "Auto-Farm: OFF"
-        autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
-    end
-end)
-
-local minimized = false
-local expandedSize = frame.Size
-
-minimize.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    if minimized then
-        content.Visible = false
-        frame.Size = UDim2.fromOffset(expandedSize.X.Offset, 30)
-        minimize.Text = "+"
-    else
-        content.Visible = true
-        frame.Size = expandedSize
-        minimize.Text = "-"
-    end
-end)
-
-close.MouseButton1Click:Connect(function()
-    isAutoFarming = false 
-    isScriptRunning = false 
-    
-    plantAddedConn:Disconnect()
-    plantRemovedConn:Disconnect()
-    for plant, _ in pairs(plantConnections) do
-        cleanupPlant(plant)
-    end
-    
-    screenGui:Destroy()
-end)
+local functio
