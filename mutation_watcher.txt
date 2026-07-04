@@ -1,3 +1,8 @@
+-- ⏳ WAIT FOR GAME TO LOAD FIRST
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -271,79 +276,4 @@ else
             while true do task.wait(5) scanAttributes() end
         end)
     end
-end            endTime,
-            endTime
-    	)
-
-        -- Pings your user upon leaving
-    	sendWebhook(
-     	   "🚨 Avoided Moon Event",
-     	   body,
-     	   0xE74C3C,
-     	   "<@604609802835853333>"
-    	)
-
-    	task.wait(1) -- Give Discord time to send
-
-        -- Kicks with the exact duration added to the message box
-   		LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", weather, formattedRemaining))
-
-  		return
-	end
-
-	local title = "🌗 Phase Changed"
-	local color = 0xF1C40F
-	local mention = nil
-	local icon = "🌗"
-
-	-- Phase & Weather Logic
-	if phase == "Day" then
-		icon = "☀️"
-		title = "☀️ Day Time"
-		color = 0xF1C40F
-	elseif phase == "Sunset" then
-		icon = "🌇"
-		title = "🌇 Sunset"
-		color = 0xE67E22
-	elseif phase == "Night" then
-		icon = "🌙"
-		
-		local lowerWeather = string.lower(weather)
-
-        -- Also uses keyword matching for the embed titles so they never fail to style
-		if string.find(lowerWeather, "blood") then
-			title = "🩸🌕 BLOOD MOON HAS BEGUN!"
-			color = 0xC70039
-			mention = "<@&1521573894383861851>"
-		elseif string.find(lowerWeather, "mega") then
-			title = "🔵🌕 MEGA MOON HAS BEGUN!"
-			color = 0x3498DB
-		elseif string.find(lowerWeather, "rainbow") then
-			title = "🌈🌕 RAINBOW MOON HAS BEGUN!"
-			color = 0x9B59B6
-		elseif string.find(lowerWeather, "gold") then
-			title = "🟡🌕 GOLD MOON HAS BEGUN!"
-			color = 0xF1C40F
-		else
-			title = "🌙 Night Time Begins"
-			color = 0x2C3E50
-		end
-	end
-
-	local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather)
-
-	sendWebhook(title, body, color, mention)
 end
-
--- Connect to BOTH signals just like the main game does
-Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
-Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
-
--- Initial startup check (wrapped in a spawn so it doesn't freeze your executor)
-task.spawn(function()
-	while Workspace:GetAttribute("ActivePhase") == nil or Workspace:GetAttribute("ActiveWeather") == nil do
-		task.wait(1)
-	end
-
-	checkTimeCycle()
-end)
