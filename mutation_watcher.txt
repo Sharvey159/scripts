@@ -3,7 +3,6 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
-local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -17,14 +16,8 @@ assert(request, "HTTP requests are not supported by this executor.")
 -- ⚙️ CONFIGURATION
 ---------------------------------------------------------------------------
 local CONFIG = {
-    -- Game IDs
-    DeadGamePlaceId = 4483381587, -- A blank, fast-loading baseplate game
-    
     -- Debug Config
     DebugMode = true, -- If true, it will leave during a "Normal Night" for 2 minutes to test
-    
-    -- File name for saving server return data
-    WaitDataFile = "WeatherWatcher_WaitData.json",
     
     -- Webhooks
     WeatherWebhook = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",
@@ -71,209 +64,167 @@ local function formatTime(seconds)
 end
 
 ---------------------------------------------------------------------------
--- 🚪 TELEPORT LOGIC (AVOID & RETURN)
+-- 🚪 KICK LOGIC (AVOID WEATHER/MOON)
 ---------------------------------------------------------------------------
-local isTeleporting = false
+local isLeaving = false
 
-local function executeServerHop(reason, remainingSeconds, webhookUrl, mention)
-    if isTeleporting then return end
-    isTeleporting = true
+local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
+    if isLeaving then return end
+    isLeaving = true
 
     local endTime = os.time() + remainingSeconds
     local formattedRemaining = formatTime(remainingSeconds)
 
     local body = string.format(
         "**Event:** %s\n" ..
-        "🚪 **Action:** Teleporting to Waiting Room\n" ..
+        "🚪 **Action:** Leaving Server\n" ..
         "⏱ **Rejoin after:** %s\n" ..
         "📅 **Ends:** <t:%d:R>\n" ..
-        "🕒 **Exact:** <t:%d:F>\n" ..
-        "🔄 Will automatically return to private server.",
+        "🕒 **Exact:** <t:%d:F>",
         reason, formattedRemaining, endTime, endTime
     )
 
     -- Ping user on avoid
     sendWebhook(webhookUrl, "🚨 Avoided Event", body, 0xE74C3C, mention)
 
-    if writefile then
-        local waitData = {
-            placeId = game.PlaceId,
-            jobId = game.JobId, -- This JobId is what forces you back into your specific Private Server
-            endTime = endTime + 5 -- 5 second buffer so the event is definitely over
-        }
-        writefile(CONFIG.WaitDataFile, HttpService:JSONEncode(waitData))
-        
-        task.wait(1.5) -- Wait for webhook and file save
-        TeleportService:Teleport(CONFIG.DeadGamePlaceId, LocalPlayer)
-    else
-        LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.\n(File saving not supported by executor)", reason, formattedRemaining))
-    end
+    task.wait(1.5) -- Wait for webhook to send
+
+    LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
 end
 
+
 ---------------------------------------------------------------------------
--- 🎮 GAME ID CHECKER (RUNS DIFFERENT LOGIC BASED ON GAME)
+-- 🌱 FARMING GAME LOGIC
 ---------------------------------------------------------------------------
 
-if game.PlaceId == CONFIG.DeadGamePlaceId then
-    -- ==========================================
-    -- 🕒 WE ARE IN THE DEAD GAME (WAITING ROOM)
-    -- ==========================================
-    if isfile and isfile(CONFIG.WaitDataFile) then
-        local success, data = pcall(function()
-            return HttpService:JSONDecode(readfile(CONFIG.WaitDataFile))
-        end)
+-- 1️⃣ PHASE WATCHER LOGIC
+local lastPhase, lastWeather = nil, nil
 
-        if success and data then
-            local currentTime = os.time()
-            local waitTime = data.endTime - currentTime
+local function isSafeMoon(weatherName)
+    local lower = string.lower(weatherName or "")
+    if string.find(lower, "blood") or string.find(lower, "mega") then return true end
+    return false
+end
 
-            if waitTime > 0 then
-                print("[Watcher] Waiting in dead game for " .. waitTime .. " seconds...")
-                task.wait(waitTime)
-            end
+local function isSpecialMoonToAvoid(weatherName)
+    local lower = string.lower(weatherName or "")
+    if isSafeMoon(weatherName) then return false end
+    if string.find(lower, "gold") or string.find(lower, "rainbow") then return true end
+    return false
+end
 
-            print("[Watcher] Time is up! Returning to Private Server...")
-            
-            if delfile then delfile(CONFIG.WaitDataFile) end
+local function checkTimeCycle()
+    local phase = Workspace:GetAttribute("ActivePhase")
+    local weather = Workspace:GetAttribute("ActiveWeather")
 
-            -- TeleportToPlaceInstance uses the JobId to put you exactly back into your Private Server
-            TeleportService:TeleportToPlaceInstance(data.placeId, data.jobId, LocalPlayer)
+    if not phase or not weather then return end
+    if phase == lastPhase and weather == lastWeather then return end
+
+    lastPhase = phase
+    lastWeather = weather
+
+    -- Determine if we should leave
+    if phase == "Night" then
+        local specialAvoid = isSpecialMoonToAvoid(weather)
+        local normalNight = not specialAvoid and not isSafeMoon(weather)
+        
+        if specialAvoid or (CONFIG.DebugMode and normalNight) then
+            local reason = specialAvoid and weather or "Normal Night (Debug Mode)"
+            executeLeave(reason, 120, CONFIG.PhaseWebhook, "<@" .. CONFIG.MyUserId .. ">")
+            return
         end
     end
 
-else
-    -- ==========================================
-    -- 🌱 WE ARE IN THE FARMING GAME
-    -- ==========================================
-    
-    -- 1️⃣ PHASE WATCHER LOGIC
-    local lastPhase, lastWeather = nil, nil
-    
-    local function isSafeMoon(weatherName)
-        local lower = string.lower(weatherName or "")
-        if string.find(lower, "blood") or string.find(lower, "mega") then return true end
-        return false
+    -- Safe Logging
+    local title, color, mention = "🌗 Phase Changed", 0xF1C40F, nil
+    local icon = "🌗"
+
+    if phase == "Day" then
+        icon, title = "☀️", "☀️ Day Time"
+    elseif phase == "Sunset" then
+        icon, title, color = "🌇", "🌇 Sunset", 0xE67E22
+    elseif phase == "Night" then
+        icon = "🌙"
+        local lower = string.lower(weather)
+        if string.find(lower, "blood") then
+            title, color, mention = "🩸🌕 BLOOD MOON HAS BEGUN!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
+        elseif string.find(lower, "mega") then
+            title, color = "🔵🌕 MEGA MOON HAS BEGUN!", 0x3498DB
+        elseif string.find(lower, "rainbow") then
+            title, color = "🌈🌕 RAINBOW MOON HAS BEGUN!", 0x9B59B6
+        elseif string.find(lower, "gold") then
+            title, color = "🟡🌕 GOLD MOON HAS BEGUN!", 0xF1C40F
+        else
+            title, color = "🌙 Night Time Begins", 0x2C3E50
+        end
     end
 
-    local function isSpecialMoonToAvoid(weatherName)
-        local lower = string.lower(weatherName or "")
-        if isSafeMoon(weatherName) then return false end
-        if string.find(lower, "gold") or string.find(lower, "rainbow") then return true end
-        return false
-    end
+    local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather)
+    sendWebhook(CONFIG.PhaseWebhook, title, body, color, mention)
+end
 
-    local function checkTimeCycle()
-        local phase = Workspace:GetAttribute("ActivePhase")
-        local weather = Workspace:GetAttribute("ActiveWeather")
+Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
+Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
 
-        if not phase or not weather then return end
-        if phase == lastPhase and weather == lastWeather then return end
+task.spawn(function()
+    if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
+end)
 
-        lastPhase = phase
-        lastWeather = weather
 
-        -- Determine if we should leave
-        if phase == "Night" then
-            local specialAvoid = isSpecialMoonToAvoid(weather)
-            local normalNight = not specialAvoid and not isSafeMoon(weather)
+-- 2️⃣ WEATHER WATCHER LOGIC
+local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
+if WeatherValues then
+    local connections, updating = {}, {}
+    local SAFE_WEATHER = { Rain = true, Sunburst = true }
+
+    local function sendWeather(weatherName)
+        task.spawn(function()
+            local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
+            if endTime <= 0 then updating[weatherName] = nil return end
             
-            if specialAvoid or (CONFIG.DebugMode and normalNight) then
-                local reason = specialAvoid and weather or "Normal Night (Debug Mode)"
-                executeServerHop(reason, 120, CONFIG.PhaseWebhook, "<@" .. CONFIG.MyUserId .. ">")
+            -- Check if Avoid
+            if not SAFE_WEATHER[weatherName] then
+                local remaining = math.max(0, endTime - os.time())
+                executeLeave(weatherName, remaining, CONFIG.WeatherWebhook, "<@" .. CONFIG.MyUserId .. ">")
                 return
             end
-        end
 
-        -- Safe Logging
-        local title, color, mention = "🌗 Phase Changed", 0xF1C40F, nil
-        local icon = "🌗"
+            -- Safe Weather Webhook
+            local body = string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
+            local mention = "<@" .. CONFIG.MyUserId .. ">"
+            if weatherName == "Sunburst" then mention = mention .. " <@&" .. CONFIG.SunburstRole .. ">" end
 
-        if phase == "Day" then
-            icon, title = "☀️", "☀️ Day Time"
-        elseif phase == "Sunset" then
-            icon, title, color = "🌇", "🌇 Sunset", 0xE67E22
-        elseif phase == "Night" then
-            icon = "🌙"
-            local lower = string.lower(weather)
-            if string.find(lower, "blood") then
-                title, color, mention = "🩸🌕 BLOOD MOON HAS BEGUN!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
-            elseif string.find(lower, "mega") then
-                title, color = "🔵🌕 MEGA MOON HAS BEGUN!", 0x3498DB
-            elseif string.find(lower, "rainbow") then
-                title, color = "🌈🌕 RAINBOW MOON HAS BEGUN!", 0x9B59B6
-            elseif string.find(lower, "gold") then
-                title, color = "🟡🌕 GOLD MOON HAS BEGUN!", 0xF1C40F
-            else
-                title, color = "🌙 Night Time Begins", 0x2C3E50
-            end
-        end
-
-        local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather)
-        sendWebhook(CONFIG.PhaseWebhook, title, body, color, mention)
+            sendWebhook(CONFIG.WeatherWebhook, "🌦 Weather Event", body, 0x00BFFF, mention)
+            updating[weatherName] = nil
+        end)
     end
 
-    Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
-    Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
-    
-    task.spawn(function()
-        if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
-    end)
+    local function watchWeather(weatherName)
+        local attr = weatherName .. "_Playing"
+        if connections[attr] then return end
 
-    -- 2️⃣ WEATHER WATCHER LOGIC
-    local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
-    if WeatherValues then
-        local connections, updating = {}, {}
-        local SAFE_WEATHER = { Rain = true, Sunburst = true }
-
-        local function sendWeather(weatherName)
-            task.spawn(function()
-                local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
-                if endTime <= 0 then updating[weatherName] = nil return end
-                
-                -- Check if Avoid
-                if not SAFE_WEATHER[weatherName] then
-                    local remaining = math.max(0, endTime - os.time())
-                    executeServerHop(weatherName, remaining, CONFIG.WeatherWebhook, "<@" .. CONFIG.MyUserId .. ">")
-                    return
-                end
-
-                -- Safe Weather Webhook
-                local body = string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
-                local mention = "<@" .. CONFIG.MyUserId .. ">"
-                if weatherName == "Sunburst" then mention = mention .. " <@&" .. CONFIG.SunburstRole .. ">" end
-
-                sendWebhook(CONFIG.WeatherWebhook, "🌦 Weather Event", body, 0x00BFFF, mention)
-                updating[weatherName] = nil
-            end)
-        end
-
-        local function watchWeather(weatherName)
-            local attr = weatherName .. "_Playing"
-            if connections[attr] then return end
-
-            connections[attr] = WeatherValues:GetAttributeChangedSignal(attr):Connect(function()
-                if WeatherValues:GetAttribute(attr) and not updating[weatherName] then
-                    updating[weatherName] = true
-                    sendWeather(weatherName)
-                end
-            end)
-
+        connections[attr] = WeatherValues:GetAttributeChangedSignal(attr):Connect(function()
             if WeatherValues:GetAttribute(attr) and not updating[weatherName] then
                 updating[weatherName] = true
                 sendWeather(weatherName)
             end
-        end
-
-        local function scanAttributes()
-            for attr in pairs(WeatherValues:GetAttributes()) do
-                local wName = attr:match("^(.*)_Playing$")
-                if wName and typeof(WeatherValues:GetAttribute(attr)) == "boolean" then watchWeather(wName) end
-            end
-        end
-
-        scanAttributes()
-        task.spawn(function()
-            while true do task.wait(5) scanAttributes() end
         end)
+
+        if WeatherValues:GetAttribute(attr) and not updating[weatherName] then
+            updating[weatherName] = true
+            sendWeather(weatherName)
+        end
     end
+
+    local function scanAttributes()
+        for attr in pairs(WeatherValues:GetAttributes()) do
+            local wName = attr:match("^(.*)_Playing$")
+            if wName and typeof(WeatherValues:GetAttribute(attr)) == "boolean" then watchWeather(wName) end
+        end
+    end
+
+    scanAttributes()
+    task.spawn(function()
+        while true do task.wait(5) scanAttributes() end
+    end)
 end
