@@ -5,44 +5,53 @@ assert(request, "HTTP requests are not supported by this executor.")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local AVOID_PHASES = {
-    Goldmoon = true,
-}
-
 local WEBHOOK_URL =
 	"https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w"
 
 local lastPhase = nil
-
 local lastWeather = nil
+
+-- Helper function to check if a moon is safe to stay in
+local function isSafeMoon(weatherName)
+    local lowerWeather = string.lower(weatherName)
+    -- Matches "bloodmoon", "blood moon", "blood", etc.
+    if string.find(lowerWeather, "blood") then return true end
+    -- Matches "megamoon", "mega moon", "mega", etc.
+    if string.find(lowerWeather, "mega") then return true end
+    
+    return false
+end
+
+-- Helper function to check if a moon is special but should be avoided
+local function isSpecialMoonToAvoid(weatherName)
+    local lowerWeather = string.lower(weatherName)
+    
+    -- If it's safe (Blood or Mega), we don't avoid it
+    if isSafeMoon(weatherName) then return false end
+    
+    -- Otherwise, check if it's one of the other special moons (Gold, Rainbow)
+    -- This handles "goldmoon", "gold moon", "gold", "rainbow moon", "rainbow", etc.
+    if string.find(lowerWeather, "gold") then return true end
+    if string.find(lowerWeather, "rainbow") then return true end
+    
+    return false
+end
 
 local function sendWebhook(title, body, color, mention)
 	task.spawn(function()
 		local success, err = pcall(function()
 			request({
-
 				Url = WEBHOOK_URL,
-
 				Method = "POST",
-
 				Headers = { ["Content-Type"] = "application/json" },
-
 				Body = HttpService:JSONEncode({
-
 					content = mention or "",
-
-					allowed_mentions = { users = { "604609802835853333" }, roles = { "1521573894383861851" } },
-
+					allowed_mentions = { parse = { "users", "roles" } },
 					embeds = {
-
 						{
-
 							title = title,
-
 							description = body,
-
 							color = color or 3447003,
-
 							timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
 						},
 					},
@@ -56,22 +65,18 @@ local function sendWebhook(title, body, color, mention)
 	end)
 end
 
-sendWebhook("👀 Phase Watcher", "✅ Phase Watcher is now online and monitoring Phase & Weather changes.", 0x2ECC71
-)
+sendWebhook("👀 Phase Watcher", "✅ Phase Watcher is now online and monitoring Phase & Weather changes.", 0x2ECC71)
 
 local function checkTimeCycle()
 	local phase = Workspace:GetAttribute("ActivePhase")
-
 	local weather = Workspace:GetAttribute("ActiveWeather")
 
 	-- Ensure the game has actually loaded the attributes
-
 	if not phase or not weather then
 		return
 	end
 
 	-- Prevent spam if neither attribute actually changed
-
 	if phase == lastPhase and weather == lastWeather then
 		return
 	end
@@ -79,18 +84,29 @@ local function checkTimeCycle()
 	lastPhase = phase
 	lastWeather = weather
 
-	-- Leave if this is a moon/weather we want to avoid
-	if phase == "Night" and AVOID_PHASES[weather] then
+	-- Leave if this is a special moon phase that we want to avoid
+	if phase == "Night" and isSpecialMoonToAvoid(weather) then
+        -- Duration is exactly 2 minutes based on wiki data
+        local remainingSeconds = 120 
+        local endTime = os.time() + remainingSeconds
+        local formattedRemaining = "2m 00s"
 
     	local body = string.format(
         	"**Phase:** 🌙 %s\n" ..
         	"**Type:** %s\n\n" ..
         	"🚪 **Action:** Leaving server.\n" ..
+            "⏱ **Rejoin after:** %s\n" ..
+            "📅 **Ends:** <t:%d:R>\n" ..
+            "🕒 **Exact:** <t:%d:F>\n" ..
         	"🔄 Will rejoin later.",
 	        phase,
-       	 weather
+       	    weather,
+            formattedRemaining,
+            endTime,
+            endTime
     	)
 
+        -- Pings your user upon leaving
     	sendWebhook(
      	   "🚨 Avoided Moon Event",
      	   body,
@@ -100,10 +116,10 @@ local function checkTimeCycle()
 
     	task.wait(1) -- Give Discord time to send
 
-   		LocalPlayer:Kick("Avoiding " .. weather .. ". Rejoining later.")
+        -- Kicks with the exact duration added to the message box
+   		LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", weather, formattedRemaining))
 
   		return
-
 	end
 
 	local title = "🌗 Phase Changed"
@@ -112,61 +128,49 @@ local function checkTimeCycle()
 	local icon = "🌗"
 
 	-- Phase & Weather Logic
-
 	if phase == "Day" then
 		icon = "☀️"
-
 		title = "☀️ Day Time"
-
 		color = 0xF1C40F
 	elseif phase == "Sunset" then
 		icon = "🌇"
-
 		title = "🌇 Sunset"
-
 		color = 0xE67E22
 	elseif phase == "Night" then
 		icon = "🌙"
+		
+		local lowerWeather = string.lower(weather)
 
-		if weather == "Bloodmoon" then
+        -- Also uses keyword matching for the embed titles so they never fail to style
+		if string.find(lowerWeather, "blood") then
 			title = "🩸🌕 BLOOD MOON HAS BEGUN!"
-
 			color = 0xC70039
-
 			mention = "<@&1521573894383861851>"
-		elseif weather == "Mega Moon" then
+		elseif string.find(lowerWeather, "mega") then
 			title = "🔵🌕 MEGA MOON HAS BEGUN!"
-
 			color = 0x3498DB
-		elseif weather == "Rainbow Moon" then
+		elseif string.find(lowerWeather, "rainbow") then
 			title = "🌈🌕 RAINBOW MOON HAS BEGUN!"
-
 			color = 0x9B59B6
-		elseif weather == "Goldmoon" then
+		elseif string.find(lowerWeather, "gold") then
 			title = "🟡🌕 GOLD MOON HAS BEGUN!"
-
 			color = 0xF1C40F
 		else
 			title = "🌙 Night Time Begins"
-
 			color = 0x2C3E50
 		end
 	end
 
-	local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather
-)
+	local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather)
 
 	sendWebhook(title, body, color, mention)
 end
 
 -- Connect to BOTH signals just like the main game does
-
 Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
-
 Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
 
 -- Initial startup check (wrapped in a spawn so it doesn't freeze your executor)
-
 task.spawn(function()
 	while Workspace:GetAttribute("ActivePhase") == nil or Workspace:GetAttribute("ActiveWeather") == nil do
 		task.wait(1)
