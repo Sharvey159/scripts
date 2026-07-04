@@ -1,6 +1,6 @@
 --[[
 =============================================================================
-Script Version: v55.0
+Script Version: v56.0
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
 =============================================================================
 ]]
@@ -51,7 +51,7 @@ local SHOVEL_NAME, SHOVEL_INTERVAL, HARVEST_INTERVAL, VERIFICATION_DELAY = "Shov
 local SPRINKLER_TYPES, SUPER_SPRINKLER_NAME, WATERING_CAN_NAME = { "Rare Sprinkler", "Legendary Sprinkler" }, "Super Sprinkler", "Super Watering Can"
 local DEFAULT_RADIUS, DEFAULT_DELAY = 4, 0.5
 
-local isAutoFarming, isScriptRunning, isMaintaining, isEventActive, isFirstCycle = false, true, false, false, true 
+local isAutoFarming, isScriptRunning, isMaintaining, isEventActive = false, true, false, false 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
 
 -- ============================================================================
@@ -208,7 +208,9 @@ local function updateAnalyticsDashboard(latestFruitsText)
             
             if not buckets[lower] then buckets[lower] = { total = 0, recent = 0 } end
             buckets[lower].total += 1
-            if now - f.Timestamp <= 1800 then -- 30 mins
+            
+            -- Only count recent additions if it wasn't a baseline scan
+            if not f.IsBaseline and (now - f.Timestamp <= 1800) then -- 30 mins
                 buckets[lower].recent += 1
             end
         end
@@ -250,7 +252,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
 
         local payload = {
             embeds = {{
-                title = "⚡ Live Session Dashboard (v55.0)",
+                title = "⚡ Live Session Dashboard (v56.0)",
                 description = embedDescription,
                 color = 3447003,
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -283,7 +285,8 @@ local function sendWebhook(url, title, body, color, mention)
             request({
                 Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" },
                 Body = HttpService:JSONEncode({
-                    content = mention or "", allowed_mentions = { parse = { "users", "roles" } },
+                    content = mention or "", 
+                    allowed_mentions = { parse = { "users", "roles" } },
                     embeds = {{ title = title, description = body, color = color or 3447003, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ") }},
                 }),
             })
@@ -438,7 +441,7 @@ local function removeKeptFruitState(fruitId)
     end
 end
 
-local function processFruit(fruit, plant)
+local function processFruit(fruit, plant, isBaseline)
     if not fruit then return end
     local name, id = fruit:GetAttribute("CorePartName"), fruit:GetAttribute("FruitId")
     local plantId = plant:GetAttribute("PlantId") or plant.Name
@@ -449,7 +452,8 @@ local function processFruit(fruit, plant)
     local fruitData = {
         PlantId = plantId, FruitId = id, Name = name,
         Weight = weight, Mutation = fruit:GetAttribute("Mutation") or "None", Instance = fruit,
-        Timestamp = os.time() 
+        Timestamp = isBaseline and 0 or os.time(), 
+        IsBaseline = isBaseline
     }
     
     if weight < 90 then harvestQueue:push(fruitData)
@@ -459,8 +463,12 @@ local function processFruit(fruit, plant)
             keptFruitCache[id] = true
             keptCount += 1
             table.insert(keptFruitList, fruitData)
-            table.insert(keptFruitTimestamps, os.time())
-            webhookQueue:push(fruitData)
+            
+            -- Only broadcast to queues and timing metrics if it was genuinely farmed
+            if not isBaseline then
+                table.insert(keptFruitTimestamps, os.time())
+                webhookQueue:push(fruitData)
+            end
         end
     end
 end
@@ -471,9 +479,19 @@ local function setupPlant(plant)
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
-    for _, fruit in ipairs(fruitsFolder:GetChildren()) do FPSOptimizer.Optimize(fruit); fruitProcessingQueue:push({ fruit = fruit, plant = plant }) end
-    table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) FPSOptimizer.Optimize(fruit); fruitProcessingQueue:push({ fruit = fruit, plant = plant }) end))
-    table.insert(plantConnections[plant], fruitsFolder.ChildRemoved:Connect(function(fruit) local id = fruit:GetAttribute("FruitId"); if id then removeKeptFruitState(id) end end))
+    -- Baseline Scan: Existing fruits bypass "recent gains" tracking
+    for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
+        fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = true }) 
+    end
+    
+    -- Newly Spawning Fruits
+    table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) 
+        fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false }) 
+    end))
+    
+    table.insert(plantConnections[plant], fruitsFolder.ChildRemoved:Connect(function(fruit) 
+        local id = fruit:GetAttribute("FruitId"); if id then removeKeptFruitState(id) end 
+    end))
 end
 
 local function cleanupPlant(plant)
@@ -482,7 +500,6 @@ local function cleanupPlant(plant)
     if fFolder then for _, f in ipairs(fFolder:GetChildren()) do local id = f:GetAttribute("FruitId"); if id then removeKeptFruitState(id) end end end
 end
 
-if isFirstCycle then runGlobalOptimizationSweep(); isFirstCycle = false end
 for _, plant in ipairs(myPlot.Plants:GetChildren()) do setupPlant(plant) end
 local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
 local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
@@ -574,7 +591,6 @@ task.spawn(function()
                 if #cycleHistory > 100 then table.remove(cycleHistory, 1) end
                 
                 isMaintaining = true; runMaintenanceCycle(); isMaintaining = false
-                runGlobalOptimizationSweep()
             end
         end
         task.wait(0.5)
@@ -588,7 +604,9 @@ task.spawn(function()
             local processed = 0
             while fruitProcessingQueue:count() > 0 and processed < 15 do
                 local data = fruitProcessingQueue:pop()
-                if data and data.fruit and data.plant and data.fruit.Parent then processFruit(data.fruit, data.plant) end
+                if data and data.fruit and data.plant and data.fruit.Parent then 
+                    processFruit(data.fruit, data.plant, data.isBaseline) 
+                end
                 processed += 1
             end
             task.wait(fruitProcessingQueue:count() > 0 and 0 or 0.1)
@@ -600,21 +618,43 @@ end)
 -- MINIMAL UI 
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui"); screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
-local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 215); frame.Position = UDim2.fromScale(0.02, 0.25); frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui; Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45); titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 255); frame.Position = UDim2.fromScale(0.02, 0.25);
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
+titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
-local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v55"; title.TextSize = 14; title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
-local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25); minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold; minimize.TextColor3 = Color3.new(1, 1, 1); minimize.TextSize = 18; minimize.Parent = titleBar; Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
-local close = Instance.new("TextButton"); close.Size = UDim2.fromOffset(25, 25); close.Position = UDim2.new(1, -28, 0, 2); close.BackgroundColor3 = Color3.fromRGB(170, 50, 50); close.Text = "X"; close.Font = Enum.Font.GothamBold; close.TextColor3 = Color3.new(1, 1, 1); close.TextSize = 14; close.Parent = titleBar; Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
+local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v56"; title.TextSize = 14;
+title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
+local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
+minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
+minimize.TextColor3 = Color3.new(1, 1, 1); minimize.TextSize = 18; minimize.Parent = titleBar; Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
+local close = Instance.new("TextButton");
+close.Size = UDim2.fromOffset(25, 25); close.Position = UDim2.new(1, -28, 0, 2); close.BackgroundColor3 = Color3.fromRGB(170, 50, 50); close.Text = "X";
+close.Font = Enum.Font.GothamBold; close.TextColor3 = Color3.new(1, 1, 1); close.TextSize = 14; close.Parent = titleBar;
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
 
-local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30); content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
-local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 35); autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold; autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content; Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
+local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30);
+content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
+
+local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 30);
+autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold;
+autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
+Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
+
+local optimizeBtn = Instance.new("TextButton"); optimizeBtn.Size = UDim2.new(1, -20, 0, 30);
+optimizeBtn.Position = UDim2.new(0, 10, 0, 45); optimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170); optimizeBtn.Text = "Optimize FPS"; optimizeBtn.Font = Enum.Font.GothamBold;
+optimizeBtn.TextSize = 14; optimizeBtn.TextColor3 = Color3.new(1, 1, 1); optimizeBtn.Parent = content;
+Instance.new("UICorner", optimizeBtn).CornerRadius = UDim.new(0, 6)
 
 local function createStatusLabel(yPos)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -20, 0, 20); lbl.Position = UDim2.new(0, 12, 0, yPos); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220); lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = content
+    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -20, 0, 20);
+    lbl.Position = UDim2.new(0, 12, 0, yPos); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220);
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = content
     return lbl
 end
-local stateLbl, harvestLbl, shovelLbl, keptLbl = createStatusLabel(55), createStatusLabel(80), createStatusLabel(105), createStatusLabel(130)
+local stateLbl, harvestLbl, shovelLbl, keptLbl = createStatusLabel(85), createStatusLabel(110), createStatusLabel(135), createStatusLabel(160)
 
 task.spawn(function()
     while isScriptRunning do
@@ -632,7 +672,12 @@ autoToggleBtn.MouseButton1Click:Connect(function()
     autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
 end)
 
-local expandedSize = frame.Size; local minimized = false
+optimizeBtn.MouseButton1Click:Connect(function()
+    runGlobalOptimizationSweep()
+end)
+
+local expandedSize = frame.Size;
+local minimized = false
 minimize.MouseButton1Click:Connect(function()
     minimized = not minimized; content.Visible = not minimized
     frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
