@@ -63,25 +63,8 @@ local function createQueue()
         first = 1,
         last = 0,
         push = function(self, item)
-            -- Priority sorting: Normal items jump ahead of Delegated items
-            if item.IsDelegated then
-                self.last += 1
-                self.items[self.last] = item
-            else
-                local insertIdx = self.last + 1
-                for i = self.first, self.last do
-                    if self.items[i] and self.items[i].IsDelegated then
-                        insertIdx = i
-                        break
-                    end
-                end
-                
-                self.last += 1
-                for i = self.last, insertIdx + 1, -1 do
-                    self.items[i] = self.items[i - 1]
-                end
-                self.items[insertIdx] = item
-            end
+            self.last += 1
+            self.items[self.last] = item
         end,
         pop = function(self)
             if self.first > self.last then return nil end
@@ -112,7 +95,7 @@ local keptFruitList = {}
 
 -- Cache Reset Constants
 local completedCycles = 0
-local CYCLE_RESET_THRESHOLD = 1
+local CYCLE_RESET_THRESHOLD = 5
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
@@ -261,7 +244,6 @@ local function runMaintenanceCycle()
     while not allVerified and isScriptRunning do
         local activeSprinklers = {}
         
-        -- Map out active sprinklers using the exact attribute name
         for _, sprinkler in ipairs(sprinklersFolder:GetChildren()) do
             local sName = sprinkler:GetAttribute("SprinklerName") or sprinkler.Name
             if sName then
@@ -269,13 +251,11 @@ local function runMaintenanceCycle()
             end
         end
 
-        -- Condition 1: Super Sprinkler is active
         if activeSprinklers[SUPER_SPRINKLER_NAME] then
             allVerified = true
             break
         end
 
-        -- Condition 2: All four standard sprinklers are active
         local hasAllStandard = true
         for _, sType in ipairs(SPRINKLER_TYPES) do
             if not activeSprinklers[sType] then
@@ -289,7 +269,6 @@ local function runMaintenanceCycle()
             break
         end
 
-        -- Determine what is missing
         local missingSprinklers = {}
         local char = getCharacter()
         local ownsSuperSprinkler = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
@@ -304,12 +283,9 @@ local function runMaintenanceCycle()
             end
         end
 
-        -- Failsafe flag to catch empty placement attempts
         local toolsSuccessfullyPlaced = 0
 
-        -- Place only the missing sprinklers in an Octagonal pattern
         for k, missingType in ipairs(missingSprinklers) do
-            -- Divide by 8 for a regular octagon layout
             local angle = (k - 1) * (2 * math.pi / 8)
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
@@ -320,24 +296,21 @@ local function runMaintenanceCycle()
             end
         end
         
-        -- Yield momentarily to allow server replication before re-verifying
         task.wait(2)
 
-        -- Failsafe: if we needed to place tools but failed to equip/place ANY of them, break to prevent infinite loop.
         if toolsSuccessfullyPlaced == 0 and not allVerified then
             warn("Sprinklers are missing, but no valid tools were found to place. Exiting maintenance to prevent softlock.")
             break 
         end
     end
 
-    -- Finish by Watering the target plant
     if allVerified then
         local waterTool = equipTool(WATERING_CAN_NAME)
         if waterTool then
             pcall(function()
                 Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool)
             end)
-            task.wait(0.5) -- Buffer for watering to complete
+            task.wait(0.5) 
         end
     end
 end
@@ -389,17 +362,24 @@ local function processFruit(fruit, plant)
         Weight = weight,
         Mutation = mutation,
         Instance = fruit,
-        Processed = false,
-        IsDelegated = false -- Defaults to normal
+        Processed = false
     }
     
     fruitCache[fruit] = fruitData
     
-    if weight < 90 then
-        harvestQueue:push(fruitData)
-    elseif weight < 100 then
-        shovelQueue:push(fruitData)
+    if weight < 100 then
+        -- Calculate the expected time each worker will take to clear its queue
+        local expectedHarvestTime = harvestQueue:count() * HARVEST_INTERVAL
+        local expectedShovelTime = shovelQueue:count() * SHOVEL_INTERVAL
+        
+        -- Delegate the task to whichever queue can finish it sooner
+        if expectedShovelTime < expectedHarvestTime then
+            shovelQueue:push(fruitData)
+        else
+            harvestQueue:push(fruitData)
+        end
     else
+        -- Kept fruits (100kg+)
         if not keptFruitCache[id] then
             keptFruitCache[id] = true
             keptCount += 1
@@ -465,95 +445,36 @@ local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 -- Worker 1: Harvest Engine
 task.spawn(function()
     while isScriptRunning do
-        if isAutoFarming and not isMaintaining then
-            if harvestQueue:count() > 0 then
-                local data = harvestQueue.items[harvestQueue.first] -- Peek
-                if data and not data.Processed and data.Instance and data.Instance.Parent then
-                    data.Processed = true
-                    pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                    harvestQueue:pop() -- Pop only after successfully processing
-                    task.wait(HARVEST_INTERVAL)
-                else
-                    harvestQueue:pop() -- Invalid or already processed data, discard
-                end
-            else
-                task.wait(0.1) 
+        if isAutoFarming and not isMaintaining and harvestQueue:count() > 0 then
+            local data = harvestQueue:pop()
+            if data and not data.Processed and data.Instance and data.Instance.Parent then
+                data.Processed = true
+                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                task.wait(HARVEST_INTERVAL)
             end
         else
-            task.wait(0.1)
+            task.wait(0.1) 
         end
     end
 end)
 
--- Worker 2: Unified Shovel & Delegated Engine
+-- Worker 2: Shovel Engine 
 task.spawn(function()
     while isScriptRunning do
-        if isAutoFarming and not isMaintaining then
-            
-            -- Count normal shovel fruits to check against our threshold
-            local normalCount = 0
-            for i = shovelQueue.first, shovelQueue.last do
-                if shovelQueue.items[i] and not shovelQueue.items[i].IsDelegated then
-                    normalCount += 1
-                end
-            end
-
-            -- Shovel Queue > 10 normal fruits: Rebalance by moving delegated back to harvest
-            if normalCount > 10 then
-                local newLast = shovelQueue.first - 1
-                for i = shovelQueue.first, shovelQueue.last do
-                    local item = shovelQueue.items[i]
-                    if item then
-                        if item.IsDelegated then
-                            item.IsDelegated = false -- Remove flag so it acts as pure harvest
-                            harvestQueue:push(item)
-                        else
-                            newLast += 1
-                            shovelQueue.items[newLast] = item
-                        end
-                    end
-                end
-                
-                -- Cleanup trailing references
-                for i = newLast + 1, shovelQueue.last do
-                    shovelQueue.items[i] = nil
-                end
-                
-                shovelQueue.last = newLast
-                if shovelQueue.first > shovelQueue.last then
-                    shovelQueue.first = 1
-                    shovelQueue.last = 0
-                end
-            end
-
-            -- Process Queue
-            if shovelQueue:count() > 0 then
-                local data = shovelQueue.items[shovelQueue.first] -- Peek
-                if data and not data.Processed and data.Instance and data.Instance.Parent then
-                    local tool = getShovelTool()
-                    if tool then
-                        data.Processed = true
-                        
-                        if data.IsDelegated then
-                            -- It's a delegated harvest task. Process as normal harvest but with shovel timing
-                            pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                        else
-                            -- It's a normal shovel task. Process as normal shovel work.
-                            local shovelType = tool:GetAttribute("Shovel")
-                            pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
-                        end
-                        
-                        shovelQueue:pop() -- Pop only after confirming tool and firing
-                        task.wait(SHOVEL_INTERVAL) -- Respect standard shovel interval for both to preserve mechanics
-                    else
-                        -- Tool not ready, wait and keep item in queue
-                        task.wait(0.5) 
-                    end
+        if isAutoFarming and not isMaintaining and shovelQueue:count() > 0 then
+            local data = shovelQueue:pop()
+            if data and not data.Processed and data.Instance and data.Instance.Parent then
+                local tool = getShovelTool()
+                if tool then
+                    data.Processed = true
+                    local shovelType = tool:GetAttribute("Shovel")
+                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                    task.wait(SHOVEL_INTERVAL)
                 else
-                    shovelQueue:pop() -- Invalid data, discard
+                    -- Re-queue if tool takes a moment to equip
+                    shovelQueue:push(data)
+                    task.wait(0.5) 
                 end
-            else
-                task.wait(0.1)
             end
         else
             task.wait(0.1)
@@ -586,39 +507,14 @@ task.spawn(function()
     end
 end)
 
--- Worker 4: Main Coordinator & Maintenance Loop
+-- Worker 4: Main Coordinator & Maintenance Loop 
 task.spawn(function()
     local wasProcessing = false
     while isScriptRunning do
         if isAutoFarming then
             local harvestRemaining = harvestQueue:count()
-            
-            local shovelRemaining = 0
-            local delegatedRemaining = 0
-            for i = shovelQueue.first, shovelQueue.last do
-                if shovelQueue.items[i] then
-                    if shovelQueue.items[i].IsDelegated then
-                        delegatedRemaining += 1
-                    else
-                        shovelRemaining += 1
-                    end
-                end
-            end
-            
-            local totalTasks = harvestRemaining + shovelRemaining + delegatedRemaining
-            
-            -- Dynamic Shovel Delegation (13%)
-            -- Prevents delegation if normal shovel tasks exceed 10
-            if shovelRemaining <= 10 and harvestRemaining > 10 and delegatedRemaining == 0 then
-                local delegateCount = math.floor(harvestRemaining * 0.13)
-                for i = 1, delegateCount do
-                    local item = harvestQueue:pop()
-                    if item then
-                        item.IsDelegated = true
-                        shovelQueue:push(item)
-                    end
-                end
-            end
+            local shovelRemaining = shovelQueue:count()
+            local totalTasks = harvestRemaining + shovelRemaining 
 
             if totalTasks > 0 then
                 wasProcessing = true
@@ -632,7 +528,6 @@ task.spawn(function()
                 if completedCycles >= CYCLE_RESET_THRESHOLD then
                     local cleanedCache = {}
                     for fruit, data in pairs(fruitCache) do
-                        -- Retain only unprocessed fruits that still exist in the workspace
                         if data.Instance and data.Instance.Parent and not data.Processed then
                             cleanedCache[fruit] = data
                         end
@@ -680,7 +575,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v37"
+title.Text = "Auto-Farm v38"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -747,22 +642,8 @@ local keptLbl = createStatusLabel(130)
 task.spawn(function()
     local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
     while isScriptRunning do
-        local delegatedRemaining = 0
-        local shovelRemaining = 0
-        
-        -- Count items in the unified queue
-        for i = shovelQueue.first, shovelQueue.last do
-            if shovelQueue.items[i] then
-                if shovelQueue.items[i].IsDelegated then
-                    delegatedRemaining += 1
-                else
-                    shovelRemaining += 1
-                end
-            end
-        end
-        
-        -- Include delegated fruits in the harvest count so the UI number remains consistent
-        local harvestRemaining = harvestQueue:count() + delegatedRemaining
+        local harvestRemaining = harvestQueue:count()
+        local shovelRemaining = shovelQueue:count()
         
         local harvestStr = "諺 Harvest State: " .. harvestRemaining
         local shovelStr = "ｪShovel State: " .. shovelRemaining
