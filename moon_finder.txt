@@ -108,8 +108,6 @@ local keptFruitCache = {}
 local keptFruitList = {}           
 local pendingVerification = {} 
 
-local plantPositionCache = {} -- Persistent O(1) position lookups
-
 -- ============================================================================
 -- DIRTY-FLAG FPS OPTIMIZER (Time Budgeted)
 -- ============================================================================
@@ -125,6 +123,8 @@ end
 
 local function processOptimizationBudget()
     local start = os.clock()
+    local newDirty = {} -- Temporary table to hold new instances safely
+    
     for instance, _ in pairs(dirtyInstances) do
         if os.clock() - start > OPTIMIZE_TIME_BUDGET then break end
         dirtyInstances[instance] = nil
@@ -145,10 +145,15 @@ local function processOptimizationBudget()
                     instance:Destroy()
                 end
                 for _, child in ipairs(instance:GetChildren()) do 
-                    dirtyInstances[child] = true 
+                    newDirty[child] = true 
                 end
             end
         end
+    end
+    
+    -- Safely merge the new children back into dirtyInstances after the loop
+    for child, _ in pairs(newDirty) do
+        dirtyInstances[child] = true
     end
 end
 
@@ -232,7 +237,7 @@ end
 
 local function getPlantPosition(plant)
     if not plant then return nil end
-    return plantPositionCache[plant]
+    return calculateInitialPosition(plant) -- Dynamic calculation instead of cache
 end
 
 local function getFirstAvailablePlant()
@@ -562,11 +567,6 @@ local function setupPlant(plant)
     if plantConnections[plant] then return end
     plantConnections[plant] = {}
     
-    -- Register Global Cache
-    if not plantPositionCache[plant] then
-        plantPositionCache[plant] = calculateInitialPosition(plant)
-    end
-    
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
@@ -594,8 +594,6 @@ local function cleanupPlant(plant)
         for _, conn in ipairs(conns) do conn:Disconnect() end
         plantConnections[plant] = nil
     end
-    
-    plantPositionCache[plant] = nil -- Free memory
     
     local fruitsFolder = plant:FindFirstChild("Fruits")
     if fruitsFolder then
