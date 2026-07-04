@@ -1,6 +1,6 @@
 --[[
 =============================================================================
-Script Version: v51.0
+Script Version: v52.0
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Incremental Processing, Immediate Optimization & Robust Queue Verification
 =============================================================================
 ]]
@@ -139,7 +139,8 @@ end
 
 local function sendWebhook(url, title, body, color, mention)
     task.spawn(function()
-        pcall(function()
+        print(string.format("[Webhook] 📡 Preparing webhook payload for: %s", title))
+        local success, err = pcall(function()
             request({
                 Url = url,
                 Method = "POST",
@@ -156,6 +157,12 @@ local function sendWebhook(url, title, body, color, mention)
                 }),
             })
         end)
+        
+        if success then
+            print(string.format("[Webhook] ✅ Webhook successfully delivered: %s", title))
+        else
+            warn(string.format("[Webhook] ❌ Webhook delivery failed for '%s': %s", title, tostring(err)))
+        end
     end)
 end
 
@@ -323,13 +330,36 @@ local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     isLeaving = true
     isScriptRunning = false -- Halt background jobs
 
+    print(string.format("[ExecuteLeave] 🛑 Unsafe event detected: %s. Initiating abort sequence.", reason))
+
     local endTime = os.time() + remainingSeconds
     local formattedRemaining = formatTime(remainingSeconds)
 
     local body = string.format("**Event:** %s\n🚪 **Action:** Leaving Server\n⏱ **Rejoin after:** %s\n📅 **Ends:** <t:%d:R>\n🕒 **Exact:** <t:%d:F>", reason, formattedRemaining, endTime, endTime)
+    
+    print("[ExecuteLeave] 📡 Dispatching event webhook...")
     sendWebhook(webhookUrl, "🚨 Avoided Event", body, 0xE74C3C, mention)
+
+    print("[ExecuteLeave] ⏳ Yielding 1.5 seconds to ensure async webhook dispatch completes...")
     task.wait(1.5) 
-    LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
+    
+    print("[ExecuteLeave] 🥾 Executing client kick...")
+    local success, err = pcall(function()
+        if player then
+            player:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
+        else
+            error("Fatal Reference: 'player' object is entirely nil.")
+        end
+    end)
+
+    if success then
+        print("[ExecuteLeave] ✅ Kick command executed successfully.")
+    else
+        warn(string.format("[ExecuteLeave] ❌ FATAL ERROR: Kick command failed: %s", tostring(err)))
+        print("[ExecuteLeave] ☢️ Engaging fallback disconnect method...")
+        -- Fallback: Forcibly destroy the LocalPlayer to disconnect from the game instantly
+        pcall(function() player:Destroy() end)
+    end
 end
 
 local isSafePhaseActive = false
@@ -792,7 +822,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v51"
+title.Text = "Auto-Farm v52"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
