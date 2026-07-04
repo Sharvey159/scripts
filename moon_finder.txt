@@ -82,8 +82,7 @@ local function createQueue()
         end
     }
 end
-
-local fruitCache = {}         
+       
 local plantConnections = {}   
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
@@ -92,10 +91,6 @@ local webhookQueue = createQueue()
 local keptCount = 0           
 local keptFruitCache = {}          
 local keptFruitList = {}           
-
--- Cache Reset Constants
-local completedCycles = 0
-local CYCLE_RESET_THRESHOLD = 3
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
@@ -329,14 +324,14 @@ end
 -- EVENT REACTIVITY
 -- ============================================================================
 
-local function removeKeptFruitState(data)
-    if not data.FruitId then return end
-    if keptFruitCache[data.FruitId] then
-        keptFruitCache[data.FruitId] = nil
+local function removeKeptFruitState(fruitId)
+    if not fruitId then return end
+    if keptFruitCache[fruitId] then
+        keptFruitCache[fruitId] = nil
         keptCount -= 1
         
         for i, f in ipairs(keptFruitList) do
-            if f.FruitId == data.FruitId then
+            if f.FruitId == fruitId then
                 table.remove(keptFruitList, i)
                 break
             end
@@ -345,7 +340,7 @@ local function removeKeptFruitState(data)
 end
 
 local function processFruit(fruit, plant)
-    if not fruit or fruitCache[fruit] then return end
+    if not fruit then return end
     
     local name = fruit:GetAttribute("CorePartName")
     local id = fruit:GetAttribute("FruitId")
@@ -371,11 +366,8 @@ local function processFruit(fruit, plant)
         Name = name,
         Weight = weight,
         Mutation = mutation,
-        Instance = fruit,
-        Processed = false
+        Instance = fruit
     }
-    
-    fruitCache[fruit] = fruitData
     
     if weight < 90 then
         harvestQueue:push(fruitData)
@@ -404,11 +396,9 @@ local function setupPlant(plant)
     
     local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) task.defer(processFruit, fruit, plant) end)
     local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
-        local data = fruitCache[fruit]
-        if data then
-            data.Processed = true 
-            fruitCache[fruit] = nil
-            if data.Weight >= 100 then removeKeptFruitState(data) end
+        local id = fruit:GetAttribute("FruitId")
+        if id then
+            removeKeptFruitState(id)
         end
     end)
     
@@ -426,11 +416,9 @@ local function cleanupPlant(plant)
     local fruitsFolder = plant:FindFirstChild("Fruits")
     if fruitsFolder then
         for _, fruit in ipairs(fruitsFolder:GetChildren()) do
-            local data = fruitCache[fruit]
-            if data then
-                data.Processed = true
-                fruitCache[fruit] = nil
-                if data.Weight >= 100 then removeKeptFruitState(data) end
+            local id = fruit:GetAttribute("FruitId")
+            if id then
+                removeKeptFruitState(id)
             end
         end
     end
@@ -449,8 +437,8 @@ task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining and harvestQueue:count() > 0 then
             local data = harvestQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
-                data.Processed = true
+            -- Relies entirely on whether the physical instance still exists in the workspace
+            if data and data.Instance and data.Instance.Parent then
                 pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
                 task.wait(HARVEST_INTERVAL)
             end
@@ -465,10 +453,10 @@ task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining and shovelQueue:count() > 0 then
             local data = shovelQueue:pop()
-            if data and not data.Processed and data.Instance and data.Instance.Parent then
+            -- Relies entirely on whether the physical instance still exists in the workspace
+            if data and data.Instance and data.Instance.Parent then
                 local tool = getShovelTool()
                 if tool then
-                    data.Processed = true
                     local shovelType = tool:GetAttribute("Shovel")
                     pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
                     task.wait(SHOVEL_INTERVAL)
@@ -524,20 +512,6 @@ task.spawn(function()
                 wasProcessing = false
                 isMaintaining = true
                 
-                -- Periodic Processed Fruit Cache Reset
-                completedCycles += 1
-                if completedCycles >= CYCLE_RESET_THRESHOLD then
-                    local cleanedCache = {}
-                    for fruit, data in pairs(fruitCache) do
-                        -- Retain only unprocessed fruits that still exist in the workspace
-                        if data.Instance and data.Instance.Parent and not data.Processed then
-                            cleanedCache[fruit] = data
-                        end
-                    end
-                    fruitCache = cleanedCache
-                    completedCycles = 0
-                end
-
                 runMaintenanceCycle()
                 isMaintaining = false
             end
@@ -577,7 +551,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v36"
+title.Text = "Auto-Farm v40"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
