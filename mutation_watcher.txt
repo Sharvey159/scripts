@@ -17,7 +17,7 @@ assert(request, "HTTP requests are not supported by this executor.")
 ---------------------------------------------------------------------------
 local CONFIG = {
     -- Debug Config
-    DebugMode = true, -- If true, it will leave during a "Normal Night" for 2 minutes to test
+    DebugMode = false, -- If true, it will leave during a "Normal Night" for 2 minutes to test
     
     -- Webhooks
     WeatherWebhook = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",
