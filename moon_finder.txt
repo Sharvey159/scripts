@@ -42,7 +42,7 @@ local SPRINKLER_TYPES = {
 local SUPER_SPRINKLER_NAME = "Super Sprinkler"
 local WATERING_CAN_NAME = "Super Watering Can"
 local DEFAULT_RADIUS = 4
-local DEFAULT_DELAY = 0.3
+local DEFAULT_DELAY = 0.5
 
 local isAutoFarming = false
 local isScriptRunning = true 
