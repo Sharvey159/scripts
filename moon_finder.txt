@@ -1,7 +1,7 @@
 --[[
 =============================================================================
-Script Version: v48.0
-Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps & FPS Optimizer
+Script Version: v49.0
+Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Incremental Processing & FPS Optimizer
 =============================================================================
 ]]
 
@@ -95,6 +95,7 @@ local function createQueue()
 end
        
 local plantConnections = {}   
+local fruitProcessingQueue = createQueue() 
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
 local webhookQueue = createQueue() 
@@ -125,7 +126,12 @@ end
 local function runGlobalOptimizationSweep()
     local plantsFolder = myPlot:FindFirstChild("Plants")
     if not plantsFolder then return end
-    for _, plant in ipairs(plantsFolder:GetChildren()) do FPSOptimizer.Optimize(plant) end
+    task.spawn(function()
+        for _, plant in ipairs(plantsFolder:GetChildren()) do 
+            FPSOptimizer.Optimize(plant) 
+            task.wait() 
+        end
+    end)
 end
 
 -- ============================================================================
@@ -302,6 +308,8 @@ local function runMaintenanceCycle()
             pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
             task.wait(0.5) 
             task.wait(10)
+            
+            getShovelTool() 
         end
     end
 end
@@ -553,9 +561,13 @@ local function setupPlant(plant)
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
-    for _, fruit in ipairs(fruitsFolder:GetChildren()) do processFruit(fruit, plant) end
+    for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
+        fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
+    end
     
-    local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) task.defer(processFruit, fruit, plant) end)
+    local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) 
+        fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
+    end)
     local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
         local id = fruit:GetAttribute("FruitId")
         if id then removeKeptFruitState(id) end
@@ -665,7 +677,8 @@ task.spawn(function()
         elseif isAutoFarming then
             local harvestRemaining = harvestQueue:count()
             local shovelRemaining = shovelQueue:count()
-            local totalTasks = harvestRemaining + shovelRemaining 
+            local processingRemaining = fruitProcessingQueue:count()
+            local totalTasks = harvestRemaining + shovelRemaining + processingRemaining
 
             if totalTasks > 0 then
                 wasProcessing = true
@@ -678,6 +691,32 @@ task.spawn(function()
             end
         end
         task.wait(0.5)
+    end
+end)
+
+-- Worker 5: Fruit Processing Batch Engine
+local FRUITS_PER_FRAME = 15
+task.spawn(function()
+    while isScriptRunning do
+        if fruitProcessingQueue:count() > 0 then
+            local processedCount = 0
+            
+            while fruitProcessingQueue:count() > 0 and processedCount < FRUITS_PER_FRAME do
+                local data = fruitProcessingQueue:pop()
+                if data and data.fruit and data.plant and data.fruit.Parent then
+                    processFruit(data.fruit, data.plant)
+                end
+                processedCount += 1
+            end
+            
+            if fruitProcessingQueue:count() > 0 then
+                task.wait() 
+            else
+                task.wait(0.1)
+            end
+        else
+            task.wait(0.1)
+        end
     end
 end)
 
@@ -712,7 +751,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v48"
+title.Text = "Auto-Farm v49"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
@@ -780,6 +819,7 @@ task.spawn(function()
     while isScriptRunning do
         local harvestRemaining = harvestQueue:count()
         local shovelRemaining = shovelQueue:count()
+        local processingRemaining = fruitProcessingQueue:count()
         
         local harvestStr = "諺 Harvest State: " .. harvestRemaining
         local shovelStr = "ｪShovel State: " .. shovelRemaining
@@ -793,6 +833,8 @@ task.spawn(function()
         elseif isAutoFarming then
             if isMaintaining then
                 stateStr = "Status: Fixing Sprinklers..."
+            elseif processingRemaining > 0 then
+                stateStr = string.format("Status: Processing Fruits (%d)", processingRemaining)
             elseif harvestRemaining > 0 then
                 stateStr = "Status: Harvesting..."
                 harvestStr = string.format("諺 Harvest State: Active (%d left)", harvestRemaining)
