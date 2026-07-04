@@ -1,7 +1,7 @@
 --[[
 =============================================================================
-Script Version: v49.0
-Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Incremental Processing & FPS Optimizer
+Script Version: v51.0
+Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Incremental Processing, Immediate Optimization & Robust Queue Verification
 =============================================================================
 ]]
 
@@ -57,6 +57,7 @@ local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
 local SHOVEL_NAME = "Shovel"
 local SHOVEL_INTERVAL = 0.65
 local HARVEST_INTERVAL = 0.11 
+local VERIFICATION_DELAY = 1.0 -- Configurable delay to wait for server response
 
 -- Sprinkler Constants
 local SPRINKLER_TYPES = { "Rare Sprinkler", "Legendary Sprinkler" }
@@ -103,6 +104,7 @@ local webhookQueue = createQueue()
 local keptCount = 0           
 local keptFruitCache = {}          
 local keptFruitList = {}           
+local pendingVerification = {} -- Tracks active verifications to prevent duplicate queue entries
 
 -- ============================================================================
 -- FPS OPTIMIZER MODULE
@@ -126,12 +128,9 @@ end
 local function runGlobalOptimizationSweep()
     local plantsFolder = myPlot:FindFirstChild("Plants")
     if not plantsFolder then return end
-    task.spawn(function()
-        for _, plant in ipairs(plantsFolder:GetChildren()) do 
-            FPSOptimizer.Optimize(plant) 
-            task.wait() 
-        end
-    end)
+    for _, plant in ipairs(plantsFolder:GetChildren()) do 
+        FPSOptimizer.Optimize(plant) 
+    end
 end
 
 -- ============================================================================
@@ -516,8 +515,6 @@ end
 
 local function processFruit(fruit, plant)
     if not fruit then return end
-    
-    FPSOptimizer.Optimize(fruit)
 
     local name = fruit:GetAttribute("CorePartName")
     local id = fruit:GetAttribute("FruitId")
@@ -562,10 +559,12 @@ local function setupPlant(plant)
     if not fruitsFolder then return end
     
     for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
+        FPSOptimizer.Optimize(fruit) -- Execute immediate optimization
         fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
     end
     
     local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) 
+        FPSOptimizer.Optimize(fruit) -- Execute immediate optimization upon spawn
         fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
     end)
     local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
@@ -608,12 +607,32 @@ local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 -- Worker 1: Harvest Engine
 task.spawn(function()
     while isScriptRunning do
-        -- OVERRIDE: Runs if regular AutoFarm is ON, OR if an Event Cleanup is active.
         if (isAutoFarming or isEventActive) and not isMaintaining and harvestQueue:count() > 0 then
             local data = harvestQueue:pop()
+            
             if data and data.Instance and data.Instance.Parent then
-                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                task.wait(HARVEST_INTERVAL)
+                if not pendingVerification[data.FruitId] then
+                    pendingVerification[data.FruitId] = true
+                    
+                    pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                    
+                    -- Non-blocking verification task
+                    task.spawn(function()
+                        task.wait(VERIFICATION_DELAY)
+                        if isScriptRunning then
+                            if data.Instance and data.Instance.Parent then
+                                -- Server rejected harvest (e.g. inventory full/rate limit); Requeue.
+                                pendingVerification[data.FruitId] = nil
+                                harvestQueue:push(data)
+                            else
+                                -- Successful harvest
+                                pendingVerification[data.FruitId] = nil
+                            end
+                        end
+                    end)
+                    
+                    task.wait(HARVEST_INTERVAL)
+                end
             end
         else
             task.wait(0.1) 
@@ -624,18 +643,40 @@ end)
 -- Worker 2: Shovel Engine 
 task.spawn(function()
     while isScriptRunning do
-        -- OVERRIDE: Runs if regular AutoFarm is ON, OR if an Event Cleanup is active.
         if (isAutoFarming or isEventActive) and not isMaintaining and shovelQueue:count() > 0 then
             local data = shovelQueue:pop()
+            
             if data and data.Instance and data.Instance.Parent then
-                local tool = getShovelTool()
-                if tool then
-                    local shovelType = tool:GetAttribute("Shovel")
-                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
-                    task.wait(SHOVEL_INTERVAL)
-                else
-                    shovelQueue:push(data)
-                    task.wait(0.5) 
+                if not pendingVerification[data.FruitId] then
+                    pendingVerification[data.FruitId] = true
+                    local tool = getShovelTool()
+                    
+                    if tool then
+                        local shovelType = tool:GetAttribute("Shovel")
+                        pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                        
+                        -- Non-blocking verification task
+                        task.spawn(function()
+                            task.wait(VERIFICATION_DELAY)
+                            if isScriptRunning then
+                                if data.Instance and data.Instance.Parent then
+                                    -- Shovel request failed or ignored; Requeue.
+                                    pendingVerification[data.FruitId] = nil
+                                    shovelQueue:push(data)
+                                else
+                                    -- Successful shovel
+                                    pendingVerification[data.FruitId] = nil
+                                end
+                            end
+                        end)
+                        
+                        task.wait(SHOVEL_INTERVAL)
+                    else
+                        -- Tool not equipped, requeue for later
+                        pendingVerification[data.FruitId] = nil
+                        shovelQueue:push(data)
+                        task.wait(0.5) 
+                    end
                 end
             end
         else
@@ -751,7 +792,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v49"
+title.Text = "Auto-Farm v51"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
