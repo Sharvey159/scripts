@@ -95,7 +95,7 @@ local keptFruitList = {}
 
 -- Cache Reset Constants
 local completedCycles = 0
-local CYCLE_RESET_THRESHOLD = 5
+local CYCLE_RESET_THRESHOLD = 3
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
@@ -244,6 +244,7 @@ local function runMaintenanceCycle()
     while not allVerified and isScriptRunning do
         local activeSprinklers = {}
         
+        -- Map out active sprinklers using the exact attribute name
         for _, sprinkler in ipairs(sprinklersFolder:GetChildren()) do
             local sName = sprinkler:GetAttribute("SprinklerName") or sprinkler.Name
             if sName then
@@ -251,11 +252,13 @@ local function runMaintenanceCycle()
             end
         end
 
+        -- Condition 1: Super Sprinkler is active
         if activeSprinklers[SUPER_SPRINKLER_NAME] then
             allVerified = true
             break
         end
 
+        -- Condition 2: All four standard sprinklers are active
         local hasAllStandard = true
         for _, sType in ipairs(SPRINKLER_TYPES) do
             if not activeSprinklers[sType] then
@@ -269,6 +272,7 @@ local function runMaintenanceCycle()
             break
         end
 
+        -- Determine what is missing
         local missingSprinklers = {}
         local char = getCharacter()
         local ownsSuperSprinkler = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
@@ -283,9 +287,12 @@ local function runMaintenanceCycle()
             end
         end
 
+        -- Failsafe flag to catch empty placement attempts
         local toolsSuccessfullyPlaced = 0
 
+        -- Place only the missing sprinklers in an Octagonal pattern
         for k, missingType in ipairs(missingSprinklers) do
+            -- Divide by 8 for a regular octagon layout
             local angle = (k - 1) * (2 * math.pi / 8)
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
@@ -296,21 +303,24 @@ local function runMaintenanceCycle()
             end
         end
         
+        -- Yield momentarily to allow server replication before re-verifying
         task.wait(2)
 
+        -- Failsafe: if we needed to place tools but failed to equip/place ANY of them, break to prevent infinite loop.
         if toolsSuccessfullyPlaced == 0 and not allVerified then
             warn("Sprinklers are missing, but no valid tools were found to place. Exiting maintenance to prevent softlock.")
             break 
         end
     end
 
+    -- Finish by Watering the target plant
     if allVerified then
         local waterTool = equipTool(WATERING_CAN_NAME)
         if waterTool then
             pcall(function()
                 Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool)
             end)
-            task.wait(0.5) 
+            task.wait(0.5) -- Buffer for watering to complete
         end
     end
 end
@@ -367,19 +377,11 @@ local function processFruit(fruit, plant)
     
     fruitCache[fruit] = fruitData
     
-    if weight < 100 then
-        -- Calculate the expected time each worker will take to clear its queue
-        local expectedHarvestTime = harvestQueue:count() * HARVEST_INTERVAL
-        local expectedShovelTime = shovelQueue:count() * SHOVEL_INTERVAL
-        
-        -- Delegate the task to whichever queue can finish it sooner
-        if expectedShovelTime < expectedHarvestTime then
-            shovelQueue:push(fruitData)
-        else
-            harvestQueue:push(fruitData)
-        end
+    if weight < 90 then
+        harvestQueue:push(fruitData)
+    elseif weight < 100 then
+        shovelQueue:push(fruitData)
     else
-        -- Kept fruits (100kg+)
         if not keptFruitCache[id] then
             keptFruitCache[id] = true
             keptCount += 1
@@ -471,7 +473,6 @@ task.spawn(function()
                     pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
                     task.wait(SHOVEL_INTERVAL)
                 else
-                    -- Re-queue if tool takes a moment to equip
                     shovelQueue:push(data)
                     task.wait(0.5) 
                 end
@@ -528,6 +529,7 @@ task.spawn(function()
                 if completedCycles >= CYCLE_RESET_THRESHOLD then
                     local cleanedCache = {}
                     for fruit, data in pairs(fruitCache) do
+                        -- Retain only unprocessed fruits that still exist in the workspace
                         if data.Instance and data.Instance.Parent and not data.Processed then
                             cleanedCache[fruit] = data
                         end
@@ -575,7 +577,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v38"
+title.Text = "Auto-Farm v36"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
