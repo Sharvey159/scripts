@@ -32,7 +32,7 @@ local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
 -- Farming Constants
 local SHOVEL_NAME = "Shovel"
 local SHOVEL_INTERVAL = 0.65
-local HARVEST_INTERVAL = 0.1 
+local HARVEST_INTERVAL = 0.11 
 
 -- Sprinkler Constants
 local SPRINKLER_TYPES = {
@@ -504,6 +504,7 @@ task.spawn(function()
                 
                 runMaintenanceCycle()
                 isMaintaining = false
+                task.wait(5)
             end
         end
         task.wait(0.5)
@@ -541,7 +542,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v43"
+title.Text = "Auto-Farm v44"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
