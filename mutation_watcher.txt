@@ -175,7 +175,7 @@ end)
 local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
 if WeatherValues then
     local connections, updating = {}, {}
-    local SAFE_WEATHER = { Rain = true, Sunburst = true }
+    local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
 
     local function sendWeather(weatherName)
         task.spawn(function()
