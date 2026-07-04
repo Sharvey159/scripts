@@ -10,13 +10,13 @@ end
 --========================================================
 local Config = {
     AutoLoad = {
-        Wis = true,
+        Wis = false,
         AutoRemoveSmallFruits = false,
         FruitDropper = false,
         FruitSummary = false,
-        HarvestFruits = true,
+        HarvestFruits = false,
         MoonFinder = true,
-        MutationWatcher = true,
+        MutationWatcher = false,
         WaterPlant = false,
         WeatherWatcher = false,
         StockWatcher = false,
