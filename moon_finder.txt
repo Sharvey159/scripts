@@ -36,8 +36,6 @@ local HARVEST_INTERVAL = 0.1
 
 -- Sprinkler Constants
 local SPRINKLER_TYPES = {
-    "Common Sprinkler",
-    "Uncommon Sprinkler",
     "Rare Sprinkler",
     "Legendary Sprinkler",
 }
