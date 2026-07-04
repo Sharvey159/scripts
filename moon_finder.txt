@@ -233,7 +233,7 @@ local function runMaintenanceCycle()
 
     local allVerified = false
 
-    -- Verification Loop
+    -- Verification Loop (No infinite loop failsafe as requested)
     while not allVerified and isScriptRunning do
         local activeSprinklers = {}
         
@@ -251,7 +251,7 @@ local function runMaintenanceCycle()
             break
         end
 
-        -- Condition 2: All four standard sprinklers are active
+        -- Condition 2: All standard sprinklers are active
         local hasAllStandard = true
         for _, sType in ipairs(SPRINKLER_TYPES) do
             if not activeSprinklers[sType] then
@@ -280,30 +280,24 @@ local function runMaintenanceCycle()
             end
         end
 
-        -- Failsafe flag to catch empty placement attempts
-        local toolsSuccessfullyPlaced = 0
-
         -- Place only the missing sprinklers in an Octagonal pattern
-        for k, missingType in ipairs(missingSprinklers) do
-            -- Divide by 8 for a regular octagon layout
-            local angle = (k - 1) * (2 * math.pi / 8)
+        for _, missingType in ipairs(missingSprinklers) do
+            -- Find the absolute index of the sprinkler type to prevent position overlapping
+            local fixedIndex = 1
+            if missingType ~= SUPER_SPRINKLER_NAME then
+                fixedIndex = table.find(SPRINKLER_TYPES, missingType) or 1
+            end
+            
+            -- Divide by 8 for a regular octagon layout, using fixed index
+            local angle = (fixedIndex - 1) * (2 * math.pi / 8)
             local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
             
-            local success = placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
-            if success then
-                toolsSuccessfullyPlaced += 1
-                task.wait(DEFAULT_DELAY)
-            end
+            placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
+            task.wait(DEFAULT_DELAY)
         end
         
         -- Yield momentarily to allow server replication before re-verifying
         task.wait(2)
-
-        -- Failsafe: if we needed to place tools but failed to equip/place ANY of them, break to prevent infinite loop.
-        if toolsSuccessfullyPlaced == 0 and not allVerified then
-            warn("Sprinklers are missing, but no valid tools were found to place. Exiting maintenance to prevent softlock.")
-            break 
-        end
     end
 
     -- Finish by Watering the target plant
@@ -435,7 +429,6 @@ task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining and harvestQueue:count() > 0 then
             local data = harvestQueue:pop()
-            -- Relies entirely on whether the physical instance still exists in the workspace
             if data and data.Instance and data.Instance.Parent then
                 pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
                 task.wait(HARVEST_INTERVAL)
@@ -451,7 +444,6 @@ task.spawn(function()
     while isScriptRunning do
         if isAutoFarming and not isMaintaining and shovelQueue:count() > 0 then
             local data = shovelQueue:pop()
-            -- Relies entirely on whether the physical instance still exists in the workspace
             if data and data.Instance and data.Instance.Parent then
                 local tool = getShovelTool()
                 if tool then
@@ -549,7 +541,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v41"
+title.Text = "Auto-Farm v43"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
