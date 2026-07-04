@@ -1,7 +1,7 @@
 --[[
 =============================================================================
-Script Version: v52.0
-Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Incremental Processing, Immediate Optimization & Robust Queue Verification
+Script Version: v53.0
+Description: Advanced Auto-Farm with Independent Event Detection, Progressive Optimization, Overlapped Pipeline Scanning & Robust Queue Verification
 =============================================================================
 ]]
 
@@ -57,7 +57,7 @@ local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
 local SHOVEL_NAME = "Shovel"
 local SHOVEL_INTERVAL = 0.65
 local HARVEST_INTERVAL = 0.11 
-local VERIFICATION_DELAY = 1.0 -- Configurable delay to wait for server response
+local VERIFICATION_DELAY = 1.0 
 
 -- Sprinkler Constants
 local SPRINKLER_TYPES = { "Rare Sprinkler", "Legendary Sprinkler" }
@@ -70,7 +70,7 @@ local DEFAULT_DELAY = 0.5
 local isAutoFarming = false
 local isScriptRunning = true 
 local isMaintaining = false 
-local isEventActive = false -- OVERRIDE LOCK: True when a safe event is running
+local isEventActive = false 
 local isFirstCycle = true 
 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
@@ -100,11 +100,12 @@ local fruitProcessingQueue = createQueue()
 local harvestQueue = createQueue()
 local shovelQueue = createQueue()
 local webhookQueue = createQueue() 
+local optimizationList = {} -- Stack for progressive background optimization
 
 local keptCount = 0           
 local keptFruitCache = {}          
 local keptFruitList = {}           
-local pendingVerification = {} -- Tracks active verifications to prevent duplicate queue entries
+local pendingVerification = {} 
 
 -- ============================================================================
 -- FPS OPTIMIZER MODULE
@@ -125,21 +126,12 @@ function FPSOptimizer.Optimize(instance)
     for _, child in ipairs(instance:GetChildren()) do FPSOptimizer.Optimize(child) end
 end
 
-local function runGlobalOptimizationSweep()
-    local plantsFolder = myPlot:FindFirstChild("Plants")
-    if not plantsFolder then return end
-    for _, plant in ipairs(plantsFolder:GetChildren()) do 
-        FPSOptimizer.Optimize(plant) 
-    end
-end
-
 -- ============================================================================
 -- UTILITY FUNCTIONS
 -- ============================================================================
 
 local function sendWebhook(url, title, body, color, mention)
     task.spawn(function()
-        print(string.format("[Webhook] 📡 Preparing webhook payload for: %s", title))
         local success, err = pcall(function()
             request({
                 Url = url,
@@ -157,10 +149,7 @@ local function sendWebhook(url, title, body, color, mention)
                 }),
             })
         end)
-        
-        if success then
-            print(string.format("[Webhook] ✅ Webhook successfully delivered: %s", title))
-        else
+        if not success then
             warn(string.format("[Webhook] ❌ Webhook delivery failed for '%s': %s", title, tostring(err)))
         end
     end)
@@ -249,7 +238,28 @@ local function placeSprinklerAt(position, sprinklerName, plotId)
 end
 
 -- ============================================================================
--- SPRINKLER MAINTENANCE LOGIC
+-- BACKGROUND SCANNING
+-- ============================================================================
+
+local function triggerFullScan()
+    local plantsFolder = myPlot:FindFirstChild("Plants")
+    if not plantsFolder then return end
+    for _, plant in ipairs(plantsFolder:GetChildren()) do
+        local fruitsFolder = plant:FindFirstChild("Fruits")
+        if fruitsFolder then
+            for _, fruit in ipairs(fruitsFolder:GetChildren()) do
+                local id = fruit:GetAttribute("FruitId")
+                -- Prevent racing conditions: Only queue if not currently actively pending collection
+                if id and not pendingVerification[id] then
+                    fruitProcessingQueue:push({ fruit = fruit, plant = plant })
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================================
+-- SPRINKLER MAINTENANCE LOGIC (Overlapped Pipeline)
 -- ============================================================================
 
 local function runMaintenanceCycle()
@@ -313,6 +323,10 @@ local function runMaintenanceCycle()
         if waterTool then
             pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
             task.wait(0.5) 
+            
+            -- PIPELINE OVERLAP: Initiate background scan to construct next cycle's queue during the delay
+            task.spawn(triggerFullScan)
+            
             task.wait(10)
             
             getShovelTool() 
@@ -328,22 +342,15 @@ local isLeaving = false
 local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     if isLeaving then return end
     isLeaving = true
-    isScriptRunning = false -- Halt background jobs
-
-    print(string.format("[ExecuteLeave] 🛑 Unsafe event detected: %s. Initiating abort sequence.", reason))
+    isScriptRunning = false
 
     local endTime = os.time() + remainingSeconds
     local formattedRemaining = formatTime(remainingSeconds)
-
     local body = string.format("**Event:** %s\n🚪 **Action:** Leaving Server\n⏱ **Rejoin after:** %s\n📅 **Ends:** <t:%d:R>\n🕒 **Exact:** <t:%d:F>", reason, formattedRemaining, endTime, endTime)
     
-    print("[ExecuteLeave] 📡 Dispatching event webhook...")
     sendWebhook(webhookUrl, "🚨 Avoided Event", body, 0xE74C3C, mention)
-
-    print("[ExecuteLeave] ⏳ Yielding 1.5 seconds to ensure async webhook dispatch completes...")
     task.wait(1.5) 
     
-    print("[ExecuteLeave] 🥾 Executing client kick...")
     local success, err = pcall(function()
         if player then
             player:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
@@ -352,12 +359,7 @@ local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
         end
     end)
 
-    if success then
-        print("[ExecuteLeave] ✅ Kick command executed successfully.")
-    else
-        warn(string.format("[ExecuteLeave] ❌ FATAL ERROR: Kick command failed: %s", tostring(err)))
-        print("[ExecuteLeave] ☢️ Engaging fallback disconnect method...")
-        -- Fallback: Forcibly destroy the LocalPlayer to disconnect from the game instantly
+    if not success then
         pcall(function() player:Destroy() end)
     end
 end
@@ -379,12 +381,8 @@ local function evaluateEventState()
     
     if currentlyActive and not isEventActive then
         isEventActive = true
-        print("[Watcher] Safe event triggered. Overriding loop for garden cleanup.")
     elseif not currentlyActive and isEventActive then
         isEventActive = false
-        print("[Watcher] Safe event ended. Restoring Sprinklers...")
-        
-        -- Restore Sprinklers
         task.spawn(function()
             if not isLeaving then
                 isMaintaining = true
@@ -408,7 +406,6 @@ local function isSpecialMoonToAvoid(weatherName)
     return false
 end
 
--- Phase Detection Loop
 local lastPhase, lastWeather = nil, nil
 local function checkTimeCycle()
     local phase = Workspace:GetAttribute("ActivePhase")
@@ -431,11 +428,9 @@ local function checkTimeCycle()
         end
     end
 
-    -- Update Safe Phase State
     isSafePhaseActive = (phase == "Night" and isSafeMoon(weather))
     evaluateEventState()
 
-    -- Phase Logging Logic
     local title, color, mention = "🌗 Phase Changed", 0xF1C40F, nil
     local icon = "🌗"
     if phase == "Day" then
@@ -462,7 +457,6 @@ Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
 Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
 if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
 
--- Weather Detection Loop
 local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
 if WeatherValues then
     local connections, updating = {}, {}
@@ -567,6 +561,9 @@ local function processFruit(fruit, plant)
         Weight = weight, Mutation = mutation, Instance = fruit
     }
     
+    -- Ensure visual optimization covers all evaluated fruits
+    table.insert(optimizationList, fruit)
+    
     if weight < 90 then
         harvestQueue:push(fruitData)
     elseif weight < 100 then
@@ -588,15 +585,10 @@ local function setupPlant(plant)
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
-    for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
-        FPSOptimizer.Optimize(fruit) -- Execute immediate optimization
-        fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
-    end
-    
     local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) 
-        FPSOptimizer.Optimize(fruit) -- Execute immediate optimization upon spawn
         fruitProcessingQueue:push({ fruit = fruit, plant = plant }) 
     end)
+    
     local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
         local id = fruit:GetAttribute("FruitId")
         if id then removeKeptFruitState(id) end
@@ -622,7 +614,7 @@ local function cleanupPlant(plant)
 end
 
 if isFirstCycle then
-    runGlobalOptimizationSweep()
+    triggerFullScan()
     isFirstCycle = false
 end
 
@@ -651,11 +643,9 @@ task.spawn(function()
                         task.wait(VERIFICATION_DELAY)
                         if isScriptRunning then
                             if data.Instance and data.Instance.Parent then
-                                -- Server rejected harvest (e.g. inventory full/rate limit); Requeue.
                                 pendingVerification[data.FruitId] = nil
                                 harvestQueue:push(data)
                             else
-                                -- Successful harvest
                                 pendingVerification[data.FruitId] = nil
                             end
                         end
@@ -685,16 +675,13 @@ task.spawn(function()
                         local shovelType = tool:GetAttribute("Shovel")
                         pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
                         
-                        -- Non-blocking verification task
                         task.spawn(function()
                             task.wait(VERIFICATION_DELAY)
                             if isScriptRunning then
                                 if data.Instance and data.Instance.Parent then
-                                    -- Shovel request failed or ignored; Requeue.
                                     pendingVerification[data.FruitId] = nil
                                     shovelQueue:push(data)
                                 else
-                                    -- Successful shovel
                                     pendingVerification[data.FruitId] = nil
                                 end
                             end
@@ -702,7 +689,6 @@ task.spawn(function()
                         
                         task.wait(SHOVEL_INTERVAL)
                     else
-                        -- Tool not equipped, requeue for later
                         pendingVerification[data.FruitId] = nil
                         shovelQueue:push(data)
                         task.wait(0.5) 
@@ -738,12 +724,11 @@ task.spawn(function()
     end
 end)
 
--- Worker 4: Main Coordinator & Maintenance Loop 
+-- Worker 4: Main Coordinator
 task.spawn(function()
     local wasProcessing = false
     while isScriptRunning do
         if isEventActive then
-            -- Let queues sweep during safe events; do NOT water or maintain sprinklers.
             task.wait(1)
         elseif isAutoFarming then
             local harvestRemaining = harvestQueue:count()
@@ -758,7 +743,6 @@ task.spawn(function()
                 isMaintaining = true
                 runMaintenanceCycle()
                 isMaintaining = false
-                runGlobalOptimizationSweep()
             end
         end
         task.wait(0.5)
@@ -785,6 +769,24 @@ task.spawn(function()
             else
                 task.wait(0.1)
             end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 6: Progressive Background Optimization Engine
+task.spawn(function()
+    while isScriptRunning do
+        if #optimizationList > 0 then
+            -- Pop from the end of the stack (reverse order)
+            local instance = table.remove(optimizationList, #optimizationList)
+            -- Verify it wasn't already successfully collected/destroyed by the harvester
+            if instance and instance.Parent then
+                FPSOptimizer.Optimize(instance)
+            end
+            -- Process at fixed rate of 10 fruits/second to eliminate CPU spikes
+            task.wait(0.1) 
         else
             task.wait(0.1)
         end
@@ -822,7 +824,7 @@ title.BackgroundTransparency = 1
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.Font = Enum.Font.GothamBold
-title.Text = "Auto-Farm v52"
+title.Text = "Auto-Farm v53"
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
