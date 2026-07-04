@@ -48,7 +48,7 @@ if not myPlot then return warn("Couldn't find your plot!") end
 local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
 
 local SHOVEL_NAME, SHOVEL_INTERVAL, HARVEST_INTERVAL, VERIFICATION_DELAY = "Shovel", 0.65, 0.11, 1.0 
-local SPRINKLER_TYPES, SUPER_SPRINKLER_NAME, WATERING_CAN_NAME = { "Rare Sprinkler", "Legendary Sprinkler" }, "Super Sprinkler", "Super Watering Can"
+local SPRINKLER_TYPES, SUPER_SPRINKLER_NAME, WATERING_CAN_NAME = { "Common Sprinkler", "Uncommon Sprinkler", "Rare Sprinkler", "Legendary Sprinkler" }, "Super Sprinkler", "Super Watering Can"
 local DEFAULT_RADIUS, DEFAULT_DELAY = 4, 0.5
 
 local isAutoFarming, isScriptRunning, isMaintaining, isEventActive = false, true, false, false 
