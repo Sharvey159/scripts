@@ -308,7 +308,7 @@ local function runMaintenanceCycle()
                 Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool)
             end)
             task.wait(0.5) -- Buffer for watering to complete
-            task.wait(5)
+            task.wait(10)
         end
     end
 end
