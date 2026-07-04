@@ -130,7 +130,7 @@ end
 -- Generates a single UI row for a script
 local function CreateScriptRow(scriptInfo, parentList)
     local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, 0, 0, 40)
+    Row.Size = UDim2.new(1, 0, 0, 35) -- Made row smaller
     Row.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
     Row.BorderSizePixel = 0
     Row.Parent = parentList
@@ -140,24 +140,24 @@ local function CreateScriptRow(scriptInfo, parentList)
     RowCorner.Parent = Row
     
     local ScriptName = Instance.new("TextLabel")
-    ScriptName.Size = UDim2.new(1, -100, 1, 0)
+    ScriptName.Size = UDim2.new(1, -85, 1, 0)
     ScriptName.Position = UDim2.new(0, 15, 0, 0)
     ScriptName.BackgroundTransparency = 1
     ScriptName.Text = scriptInfo.Name
     ScriptName.TextColor3 = Color3.fromRGB(220, 220, 220)
     ScriptName.Font = Enum.Font.GothamMedium
-    ScriptName.TextSize = 14
+    ScriptName.TextSize = 13 -- Slightly smaller text
     ScriptName.TextXAlignment = Enum.TextXAlignment.Left
     ScriptName.Parent = Row
     
     local LoadBtn = Instance.new("TextButton")
-    LoadBtn.Size = UDim2.new(0, 70, 0, 26)
-    LoadBtn.Position = UDim2.new(1, -80, 0.5, -13)
+    LoadBtn.Size = UDim2.new(0, 60, 0, 24) -- Smaller button
+    LoadBtn.Position = UDim2.new(1, -70, 0.5, -12)
     LoadBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
     LoadBtn.Text = "Load"
     LoadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     LoadBtn.Font = Enum.Font.GothamBold
-    LoadBtn.TextSize = 12
+    LoadBtn.TextSize = 11
     LoadBtn.Parent = Row
     
     local BtnCorner = Instance.new("UICorner")
@@ -179,10 +179,10 @@ local function InitializeUI()
     ScreenGui.ResetOnSpawn = false
     ScreenGui.Parent = CoreGui
     
-    -- Main Container
+    -- Main Container (Made significantly smaller)
     local MainFrame = Instance.new("Frame")
-    MainFrame.Size = UDim2.new(0, 420, 0, 450)
-    MainFrame.Position = UDim2.new(0.5, -210, 0.5, -225)
+    MainFrame.Size = UDim2.new(0, 350, 0, 280)
+    MainFrame.Position = UDim2.new(0.5, -175, 0.5, -140)
     MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     MainFrame.BorderSizePixel = 0
     MainFrame.ClipsDescendants = true
@@ -194,54 +194,54 @@ local function InitializeUI()
     
     -- Top Bar
     local TopBar = Instance.new("Frame")
-    TopBar.Size = UDim2.new(1, 0, 0, 40)
+    TopBar.Size = UDim2.new(1, 0, 0, 35)
     TopBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     TopBar.BorderSizePixel = 0
     TopBar.Parent = MainFrame
     
     local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -100, 1, 0)
-    Title.Position = UDim2.new(0, 15, 0, 0)
+    Title.Size = UDim2.new(1, -80, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
     Title.BackgroundTransparency = 1
-    Title.Text = "Sharvey Script Manager v1.3.0"
+    Title.Text = "Sharvey Script Manager v1.5.0"
     Title.TextColor3 = Color3.fromRGB(255, 255, 255)
     Title.Font = Enum.Font.GothamBold
-    Title.TextSize = 15
+    Title.TextSize = 14
     Title.TextXAlignment = Enum.TextXAlignment.Left
     Title.Parent = TopBar
     
     -- Window Controls (Minimize / Close)
     local MinBtn = Instance.new("TextButton")
-    MinBtn.Size = UDim2.new(0, 40, 0, 40)
-    MinBtn.Position = UDim2.new(1, -80, 0, 0)
+    MinBtn.Size = UDim2.new(0, 35, 0, 35)
+    MinBtn.Position = UDim2.new(1, -70, 0, 0)
     MinBtn.BackgroundTransparency = 1
     MinBtn.Text = "_"
     MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     MinBtn.Font = Enum.Font.GothamBold
-    MinBtn.TextSize = 16
+    MinBtn.TextSize = 14
     MinBtn.Parent = TopBar
     
     local CloseBtn = Instance.new("TextButton")
-    CloseBtn.Size = UDim2.new(0, 40, 0, 40)
-    CloseBtn.Position = UDim2.new(1, -40, 0, 0)
+    CloseBtn.Size = UDim2.new(0, 35, 0, 35)
+    CloseBtn.Position = UDim2.new(1, -35, 0, 0)
     CloseBtn.BackgroundTransparency = 1
     CloseBtn.Text = "X"
     CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     CloseBtn.Font = Enum.Font.GothamBold
-    CloseBtn.TextSize = 14
+    CloseBtn.TextSize = 13
     CloseBtn.Parent = TopBar
     
-    -- Scrollable List
+    -- Scrollable List (Adjusted height for smaller window)
     local ScrollFrame = Instance.new("ScrollingFrame")
-    ScrollFrame.Size = UDim2.new(1, -20, 1, -105)
-    ScrollFrame.Position = UDim2.new(0, 10, 0, 45)
+    ScrollFrame.Size = UDim2.new(1, -16, 1, -85)
+    ScrollFrame.Position = UDim2.new(0, 8, 0, 40)
     ScrollFrame.BackgroundTransparency = 1
     ScrollFrame.ScrollBarThickness = 4
     ScrollFrame.BorderSizePixel = 0
     ScrollFrame.Parent = MainFrame
     
     local UIListLayout = Instance.new("UIListLayout")
-    UIListLayout.Padding = UDim.new(0, 6)
+    UIListLayout.Padding = UDim.new(0, 5)
     UIListLayout.Parent = ScrollFrame
     
     -- Dynamically adjust scroll canvas size
@@ -254,39 +254,40 @@ local function InitializeUI()
         CreateScriptRow(scriptInfo, ScrollFrame)
     end
     
-    -- Bottom Action Buttons
+    -- Bottom Action Buttons (Resized for smaller width)
     local BottomFrame = Instance.new("Frame")
-    BottomFrame.Size = UDim2.new(1, 0, 0, 50)
-    BottomFrame.Position = UDim2.new(0, 0, 1, -50)
+    BottomFrame.Size = UDim2.new(1, 0, 0, 45)
+    BottomFrame.Position = UDim2.new(0, 0, 1, -45)
     BottomFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
     BottomFrame.BorderSizePixel = 0
     BottomFrame.Parent = MainFrame
     
     local function CreateBottomButton(text, pos, color, parent)
         local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, 120, 0, 30)
+        btn.Size = UDim2.new(0, 100, 0, 26) -- Smaller buttons
         btn.Position = pos
         btn.BackgroundColor3 = color
         btn.Text = text
         btn.TextColor3 = Color3.fromRGB(255, 255, 255)
         btn.Font = Enum.Font.GothamBold
-        btn.TextSize = 13
+        btn.TextSize = 12
         btn.Parent = parent
         
         local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 6)
+        corner.CornerRadius = UDim.new(0, 5)
         corner.Parent = btn
         
         return btn
     end
     
-    local LoadAllBtn = CreateBottomButton("Load All", UDim2.new(0, 15, 0.5, -15), Color3.fromRGB(40, 167, 69), BottomFrame)
+    -- Adjusted positioning for the 350px wide frame
+    local LoadAllBtn = CreateBottomButton("Load All", UDim2.new(0, 12, 0.5, -13), Color3.fromRGB(40, 167, 69), BottomFrame)
     ApplyButtonHover(LoadAllBtn, Color3.fromRGB(40, 167, 69), Color3.fromRGB(45, 185, 75))
     
-    local ReloadAllBtn = CreateBottomButton("Reload All", UDim2.new(0.5, -60, 0.5, -15), Color3.fromRGB(255, 165, 0), BottomFrame)
+    local ReloadAllBtn = CreateBottomButton("Reload All", UDim2.new(0.5, -50, 0.5, -13), Color3.fromRGB(255, 165, 0), BottomFrame)
     ApplyButtonHover(ReloadAllBtn, Color3.fromRGB(255, 165, 0), Color3.fromRGB(255, 180, 30))
     
-    local CloseAllBtn = CreateBottomButton("Close UI", UDim2.new(1, -135, 0.5, -15), Color3.fromRGB(220, 53, 69), BottomFrame)
+    local CloseAllBtn = CreateBottomButton("Close UI", UDim2.new(1, -112, 0.5, -13), Color3.fromRGB(220, 53, 69), BottomFrame)
     ApplyButtonHover(CloseAllBtn, Color3.fromRGB(220, 53, 69), Color3.fromRGB(235, 60, 75))
     
     -- Button Connections
@@ -297,7 +298,7 @@ local function InitializeUI()
     
     MinBtn.MouseButton1Click:Connect(function()
         isMinimized = not isMinimized
-        local targetSize = isMinimized and UDim2.new(0, 420, 0, 40) or UDim2.new(0, 420, 0, 450)
+        local targetSize = isMinimized and UDim2.new(0, 350, 0, 35) or UDim2.new(0, 350, 0, 280)
         TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
     end)
     
