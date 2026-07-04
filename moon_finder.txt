@@ -1,123 +1,851 @@
 --[[
 =============================================================================
-Script Version: v47.0
-Description: Advanced Auto-Farm with Integrated FPS Optimizer & First-Cycle Sweep
+Script Version: v48.0
+Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps & FPS Optimizer
 =============================================================================
 ]]
 
-local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
+-- ⏳ WAIT FOR GAME TO LOAD FIRST
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
--- ==========================================
+-- --- SERVICES & REQUIRES ---
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+
+local request = request or http_request or (syn and syn.request)
+assert(request, "HTTP requests are not supported by this executor.")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Attempt to load modules safely
+local FruitVisualizerController = require(player:WaitForChild("PlayerScripts"):WaitForChild("Controllers"):WaitForChild("FruitVisualizerController"))
+local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+
+-- ============================================================================
 -- SYSTEM CONFIGURATION
--- ==========================================
-local Config = {
-    PostWaterSleepTime = 30, -- Seconds to sleep and let crops grow after watering
-    DebugMode = true,
-    -- NOTE: Adjust this path to point exactly to where your 150 plants are stored
-    PlotFolder = Workspace:WaitForChild("Plants") 
+-- ============================================================================
+local CONFIG = {
+    DebugMode = false, 
+    WeatherWebhook = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",
+    PhaseWebhook = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w",
+    MyUserId = "604609802835853333",
+    BloodMoonRole = "1521573894383861851",
+    SunburstRole = "1522844669027815426"
 }
 
-local isFirstCycle = true
+-- 1. Find Plot
+local myPlot
+for _, plot in ipairs(workspace.Gardens:GetChildren()) do
+    if plot:GetAttribute("OwnerUserId") == player.UserId then
+        myPlot = plot
+        break
+    end
+end
 
--- ==========================================
+if not myPlot then
+    warn("Couldn't find your plot!")
+    return
+end
+local myPlotId = tonumber(myPlot.Name:match("%d+")) or 0
+
+-- Farming Constants
+local SHOVEL_NAME = "Shovel"
+local SHOVEL_INTERVAL = 0.65
+local HARVEST_INTERVAL = 0.11 
+
+-- Sprinkler Constants
+local SPRINKLER_TYPES = { "Rare Sprinkler", "Legendary Sprinkler" }
+local SUPER_SPRINKLER_NAME = "Super Sprinkler"
+local WATERING_CAN_NAME = "Super Watering Can"
+local DEFAULT_RADIUS = 4
+local DEFAULT_DELAY = 0.5
+
+-- State Variables
+local isAutoFarming = false
+local isScriptRunning = true 
+local isMaintaining = false 
+local isEventActive = false -- OVERRIDE LOCK: True when a safe event is running
+local isFirstCycle = true 
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
+
+-- ============================================================================
+-- QUEUES & CACHES
+-- ============================================================================
+
+local function createQueue()
+    return {
+        items = {}, first = 1, last = 0,
+        push = function(self, item) self.last += 1; self.items[self.last] = item end,
+        pop = function(self)
+            if self.first > self.last then return nil end
+            local val = self.items[self.first]
+            self.items[self.first] = nil
+            self.first += 1
+            if self.first > self.last then self.first = 1; self.last = 0 end
+            return val
+        end,
+        count = function(self) return self.last - self.first + 1 end
+    }
+end
+       
+local plantConnections = {}   
+local harvestQueue = createQueue()
+local shovelQueue = createQueue()
+local webhookQueue = createQueue() 
+
+local keptCount = 0           
+local keptFruitCache = {}          
+local keptFruitList = {}           
+
+-- ============================================================================
 -- FPS OPTIMIZER MODULE
--- ==========================================
+-- ============================================================================
+
 local FPSOptimizer = {}
 
--- Recursively strips visual bloat while protecting critical interaction parts
 function FPSOptimizer.Optimize(instance)
     if not instance then return end
-
-    -- 🛡️ PROTECTION CHECKS (Do not touch harvesting/shovel logic)
     if instance:IsA("BasePart") then
         if string.match(string.lower(instance.Name), "harvest") then return end
         if instance:FindFirstChildWhichIsA("ProximityPrompt") then return end
         if instance:FindFirstChildWhichIsA("TouchTransmitter") then return end
     end
-
-    -- 💥 DESTROY VISUAL BLOAT (Textures, Decals, ParticleEmitters)
     if instance:IsA("Decal") or instance:IsA("Texture") or instance:IsA("ParticleEmitter") then
         instance:Destroy()
     end
-
-    -- Dig into the children (e.g., inside 📁 Fruits, 📁 Leaves, 🧱 BloodlitVFX)
-    for _, child in ipairs(instance:GetChildren()) do
-        FPSOptimizer.Optimize(child)
-    end
+    for _, child in ipairs(instance:GetChildren()) do FPSOptimizer.Optimize(child) end
 end
 
--- Runs across all 150 plants and sets up dynamic fruit listeners
 local function runGlobalOptimizationSweep()
-    if Config.DebugMode then print("[FPS Optimizer] Running global baseline sweep...") end
+    local plantsFolder = myPlot:FindFirstChild("Plants")
+    if not plantsFolder then return end
+    for _, plant in ipairs(plantsFolder:GetChildren()) do FPSOptimizer.Optimize(plant) end
+end
+
+-- ============================================================================
+-- UTILITY FUNCTIONS
+-- ============================================================================
+
+local function sendWebhook(url, title, body, color, mention)
+    task.spawn(function()
+        pcall(function()
+            request({
+                Url = url,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    content = mention or "",
+                    allowed_mentions = { parse = { "users", "roles" } },
+                    embeds = {{
+                        title = title,
+                        description = body,
+                        color = color or 3447003,
+                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    }},
+                }),
+            })
+        end)
+    end)
+end
+
+local function formatTime(seconds)
+    seconds = math.max(0, math.floor(seconds))
+    local minutes = math.floor(seconds / 60)
+    local secs = seconds % 60
+    if minutes > 0 then return string.format("%dm %02ds", minutes, secs) end
+    return string.format("%ds", secs)
+end
+
+local function getCharacter()
+    return player.Character or player.CharacterAdded:Wait()
+end
+
+local cachedShovelInstance = nil
+local function getShovelTool()
+    local character = player.Character
+    if not character then return nil end
+    if cachedShovelInstance and cachedShovelInstance.Parent == character then return cachedShovelInstance end
     
-    for _, plant in ipairs(Config.PlotFolder:GetChildren()) do
-        -- 1. Optimize existing plant structure
-        FPSOptimizer.Optimize(plant)
-        
-        -- 2. Setup dynamic listener for newly spawned fruits
-        local fruitsFolder = plant:FindFirstChild("Fruits")
-        if fruitsFolder and not fruitsFolder:GetAttribute("ListenerAttached") then
-            fruitsFolder.ChildAdded:Connect(function(newFruit)
-                if Config.DebugMode then print("[FPS Optimizer] New fruit detected. Optimizing instantly.") end
-                task.wait(0.1) -- Brief pause to ensure Roblox fully loads the object before sweeping
-                FPSOptimizer.Optimize(newFruit)
-            end)
-            -- Mark this folder so we don't attach duplicate listeners next loop
-            fruitsFolder:SetAttribute("ListenerAttached", true)
+    local tool = character:FindFirstChild(SHOVEL_NAME) or player.Backpack:FindFirstChild(SHOVEL_NAME)
+    if tool then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid:EquipTool(tool); cachedShovelInstance = tool; return tool end
+    end
+    return nil
+end
+
+local function equipTool(toolName)
+    local char = getCharacter()
+    local tool = player.Backpack:FindFirstChild(toolName) or char:FindFirstChild(toolName)
+    if not tool then return nil end
+    if tool.Parent ~= char then
+        local humanoid = char:FindFirstChild("Humanoid")
+        if humanoid then humanoid:EquipTool(tool) end
+        local deadline = tick() + 2
+        repeat task.wait() until tool.Parent == char or tick() > deadline
+        task.wait(0.1)
+    end
+    return tool
+end
+
+local function getPlantPosition(plant)
+    if not plant then return nil end
+    if plant:IsA("Model") and plant.PrimaryPart then return plant.PrimaryPart.Position end
+    local ok, pivot = pcall(function() return plant:GetPivot() end)
+    if ok and pivot then return pivot.Position end
+    if plant:IsA("BasePart") then return plant.Position end
+    for _, child in ipairs(plant:GetDescendants()) do
+        if child:IsA("BasePart") then return child.Position end
+    end
+    return nil
+end
+
+local function getFirstAvailablePlant()
+    local plantsFolder = myPlot:FindFirstChild("Plants")
+    if not plantsFolder then return nil end
+    local plants = plantsFolder:GetChildren()
+    for _, plant in ipairs(plants) do
+        if getPlantPosition(plant) then return plant end
+    end
+    return plants[1]
+end
+
+local function getPlayerGroundHeight()
+    local char = getCharacter()
+    local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if not root then return 0 end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char }
+    local origin = root.Position
+    local direction = Vector3.new(0, -100, 0)
+    local result = workspace:Raycast(origin, direction, params)
+    return result and result.Position.Y or origin.Y
+end
+
+local function placeSprinklerAt(position, sprinklerName, plotId)
+    local tool = equipTool(sprinklerName)
+    if not tool then return false end
+    pcall(function() Networking.Place.PlaceSprinkler:Fire(position, sprinklerName, tool, plotId) end)
+    return true
+end
+
+-- ============================================================================
+-- SPRINKLER MAINTENANCE LOGIC
+-- ============================================================================
+
+local function runMaintenanceCycle()
+    local sprinklersFolder = myPlot:FindFirstChild("Sprinklers")
+    if not sprinklersFolder then return end
+
+    local targetPlant = getFirstAvailablePlant()
+    local plantPos = targetPlant and getPlantPosition(targetPlant)
+    if not plantPos then return end
+    
+    local groundY = getPlayerGroundHeight()
+    local centerPosition = Vector3.new(plantPos.X, groundY, plantPos.Z)
+    local allVerified = false
+
+    while not allVerified and isScriptRunning do
+        local activeSprinklers = {}
+        for _, sprinkler in ipairs(sprinklersFolder:GetChildren()) do
+            local sName = sprinkler:GetAttribute("SprinklerName") or sprinkler.Name
+            if sName then activeSprinklers[sName] = true end
+        end
+
+        if activeSprinklers[SUPER_SPRINKLER_NAME] then
+            allVerified = true
+            break
+        end
+
+        local hasAllStandard = true
+        for _, sType in ipairs(SPRINKLER_TYPES) do
+            if not activeSprinklers[sType] then hasAllStandard = false break end
+        end
+
+        if hasAllStandard then allVerified = true break end
+
+        local missingSprinklers = {}
+        local char = getCharacter()
+        local ownsSuperSprinkler = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
+
+        if ownsSuperSprinkler then
+            table.insert(missingSprinklers, SUPER_SPRINKLER_NAME)
+        else
+            for _, sType in ipairs(SPRINKLER_TYPES) do
+                if not activeSprinklers[sType] then table.insert(missingSprinklers, sType) end
+            end
+        end
+
+        for _, missingType in ipairs(missingSprinklers) do
+            local fixedIndex = 1
+            if missingType ~= SUPER_SPRINKLER_NAME then
+                fixedIndex = table.find(SPRINKLER_TYPES, missingType) or 1
+            end
+            local angle = (fixedIndex - 1) * (2 * math.pi / 8)
+            local offset = Vector3.new(math.cos(angle) * DEFAULT_RADIUS, 0, math.sin(angle) * DEFAULT_RADIUS)
+            placeSprinklerAt(centerPosition + offset, missingType, myPlotId)
+            task.wait(DEFAULT_DELAY)
+        end
+        task.wait(2)
+    end
+
+    if allVerified then
+        local waterTool = equipTool(WATERING_CAN_NAME)
+        if waterTool then
+            pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
+            task.wait(0.5) 
+            task.wait(10)
         end
     end
 end
 
--- ==========================================
--- CORE FARMING SEQUENCES
--- ==========================================
-local function executeHarvestSequence()
-    if Config.DebugMode then print("[Farm] Executing harvest cycle...") end
-    -- [Insert your existing v46 character teleporting / ProximityPrompt firing code here]
-    task.wait(2) -- Placeholder for harvest duration
+-- ============================================================================
+-- INDEPENDENT EVENT WATCHER (MOONS & WEATHER)
+-- ============================================================================
+
+local isLeaving = false
+local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
+    if isLeaving then return end
+    isLeaving = true
+    isScriptRunning = false -- Halt background jobs
+
+    local endTime = os.time() + remainingSeconds
+    local formattedRemaining = formatTime(remainingSeconds)
+
+    local body = string.format("**Event:** %s\n🚪 **Action:** Leaving Server\n⏱ **Rejoin after:** %s\n📅 **Ends:** <t:%d:R>\n🕒 **Exact:** <t:%d:F>", reason, formattedRemaining, endTime, endTime)
+    sendWebhook(webhookUrl, "🚨 Avoided Event", body, 0xE74C3C, mention)
+    task.wait(1.5) 
+    LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
 end
 
-local function executeWateringSequence()
-    if Config.DebugMode then print("[Farm] Executing watering cycle...") end
-    -- [Insert your existing v46 tool equipping and watering logic here]
-    task.wait(2) -- Placeholder for watering duration
-end
+local isSafePhaseActive = false
+local activeWeathers = {}
+local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
 
--- ==========================================
--- MAIN SYSTEM LOOP
--- ==========================================
-local function startSystem()
-    print("[System] Auto-Farm v47 Initialized. Standing by.")
-    
-    while true do
-        -- 🚨 STEP 1: First Cycle Pre-Optimization Sweep
-        if isFirstCycle then
-            print("[System] First cycle detected. Preventing startup lag...")
-            runGlobalOptimizationSweep() 
-            isFirstCycle = false
-            print("[FPS Optimizer] Baseline clean complete. Physics settled.")
-            task.wait(1) 
+local function evaluateEventState()
+    local isAnySafeWeather = false
+    for wName, isActive in pairs(activeWeathers) do
+        if isActive and SAFE_WEATHER[wName] then
+            isAnySafeWeather = true
+            break
         end
-
-        -- 🚜 STEP 2: Active Harvesting Phase
-        executeHarvestSequence()
-
-        -- 💧 STEP 3: Active Watering Phase
-        executeWateringSequence()
-
-        -- 😴 STEP 4: Sleep & Background Optimization Phase
-        print("[System] Cycle complete. Entering sleep mode for " .. Config.PostWaterSleepTime .. " seconds.")
+    end
+    
+    local currentlyActive = isSafePhaseActive or isAnySafeWeather
+    
+    if currentlyActive and not isEventActive then
+        isEventActive = true
+        print("[Watcher] Safe event triggered. Overriding loop for garden cleanup.")
+    elseif not currentlyActive and isEventActive then
+        isEventActive = false
+        print("[Watcher] Safe event ended. Restoring Sprinklers...")
         
-        -- Run background cleanup during downtime to keep CPU clear during active phases
-        runGlobalOptimizationSweep()
-
-        -- Sleep to let plants grow
-        task.wait(Config.PostWaterSleepTime)
+        -- Restore Sprinklers
+        task.spawn(function()
+            if not isLeaving then
+                isMaintaining = true
+                runMaintenanceCycle()
+                isMaintaining = false
+            end
+        end)
     end
 end
 
--- ==========================================
--- BOOT SEQUENCE
--- ==========================================
-startSystem()
+local function isSafeMoon(weatherName)
+    local lower = string.lower(weatherName or "")
+    if string.find(lower, "blood") or string.find(lower, "mega") then return true end
+    return false
+end
+
+local function isSpecialMoonToAvoid(weatherName)
+    local lower = string.lower(weatherName or "")
+    if isSafeMoon(weatherName) then return false end
+    if string.find(lower, "gold") or string.find(lower, "rainbow") then return true end
+    return false
+end
+
+-- Phase Detection Loop
+local lastPhase, lastWeather = nil, nil
+local function checkTimeCycle()
+    local phase = Workspace:GetAttribute("ActivePhase")
+    local weather = Workspace:GetAttribute("ActiveWeather")
+
+    if not phase or not weather then return end
+    if phase == lastPhase and weather == lastWeather then return end
+
+    lastPhase = phase
+    lastWeather = weather
+
+    if phase == "Night" then
+        local specialAvoid = isSpecialMoonToAvoid(weather)
+        local normalNight = not specialAvoid and not isSafeMoon(weather)
+        
+        if specialAvoid or (CONFIG.DebugMode and normalNight) then
+            local reason = specialAvoid and weather or "Normal Night (Debug Mode)"
+            executeLeave(reason, 120, CONFIG.PhaseWebhook, "<@" .. CONFIG.MyUserId .. ">")
+            return
+        end
+    end
+
+    -- Update Safe Phase State
+    isSafePhaseActive = (phase == "Night" and isSafeMoon(weather))
+    evaluateEventState()
+
+    -- Phase Logging Logic
+    local title, color, mention = "🌗 Phase Changed", 0xF1C40F, nil
+    local icon = "🌗"
+    if phase == "Day" then
+        icon, title = "☀️", "☀️ Day Time"
+    elseif phase == "Sunset" then
+        icon, title, color = "🌇", "🌇 Sunset", 0xE67E22
+    elseif phase == "Night" then
+        icon = "🌙"
+        local lower = string.lower(weather)
+        if string.find(lower, "blood") then
+            title, color, mention = "🩸🌕 BLOOD MOON HAS BEGUN!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
+        elseif string.find(lower, "mega") then
+            title, color = "🔵🌕 MEGA MOON HAS BEGUN!", 0x3498DB
+        else
+            title, color = "🌙 Night Time Begins", 0x2C3E50
+        end
+    end
+
+    local body = string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather)
+    sendWebhook(CONFIG.PhaseWebhook, title, body, color, mention)
+end
+
+Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
+Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
+if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
+
+-- Weather Detection Loop
+local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
+if WeatherValues then
+    local connections, updating = {}, {}
+
+    local function sendWeatherNotification(weatherName)
+        task.spawn(function()
+            local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
+            if endTime <= 0 then updating[weatherName] = nil return end
+            
+            if not SAFE_WEATHER[weatherName] then
+                local remaining = math.max(0, endTime - os.time())
+                executeLeave(weatherName, remaining, CONFIG.WeatherWebhook, "<@" .. CONFIG.MyUserId .. ">")
+                return
+            end
+
+            local body = string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
+            local mention = "<@" .. CONFIG.MyUserId .. ">"
+            if weatherName == "Sunburst" then mention = mention .. " <@&" .. CONFIG.SunburstRole .. ">" end
+
+            sendWebhook(CONFIG.WeatherWebhook, "🌦 Weather Event", body, 0x00BFFF, mention)
+            updating[weatherName] = nil
+        end)
+    end
+
+    local function watchWeather(weatherName)
+        local attr = weatherName .. "_Playing"
+        if connections[attr] then return end
+
+        connections[attr] = WeatherValues:GetAttributeChangedSignal(attr):Connect(function()
+            local isPlaying = WeatherValues:GetAttribute(attr)
+            activeWeathers[weatherName] = isPlaying
+            evaluateEventState()
+
+            if isPlaying and not updating[weatherName] then
+                updating[weatherName] = true
+                sendWeatherNotification(weatherName)
+            end
+        end)
+
+        if WeatherValues:GetAttribute(attr) then
+            activeWeathers[weatherName] = true
+            evaluateEventState()
+            if not updating[weatherName] then
+                updating[weatherName] = true
+                sendWeatherNotification(weatherName)
+            end
+        end
+    end
+
+    local function scanAttributes()
+        for attr in pairs(WeatherValues:GetAttributes()) do
+            local wName = attr:match("^(.*)_Playing$")
+            if wName and typeof(WeatherValues:GetAttribute(attr)) == "boolean" then watchWeather(wName) end
+        end
+    end
+
+    scanAttributes()
+    task.spawn(function()
+        while true do task.wait(5) scanAttributes() end
+    end)
+end
+
+-- ============================================================================
+-- FRUIT PROCESSING & EVENT REACTIVITY
+-- ============================================================================
+
+local function removeKeptFruitState(fruitId)
+    if not fruitId then return end
+    if keptFruitCache[fruitId] then
+        keptFruitCache[fruitId] = nil
+        keptCount -= 1
+        for i, f in ipairs(keptFruitList) do
+            if f.FruitId == fruitId then
+                table.remove(keptFruitList, i)
+                break
+            end
+        end
+    end
+end
+
+local function processFruit(fruit, plant)
+    if not fruit then return end
+    
+    FPSOptimizer.Optimize(fruit)
+
+    local name = fruit:GetAttribute("CorePartName")
+    local id = fruit:GetAttribute("FruitId")
+    if not id or not name then return end
+    
+    local plantId = plant:GetAttribute("PlantId") or plant.Name
+    if not plantId then return end
+    
+    local mutation = fruit:GetAttribute("Mutation")
+    if not mutation or mutation == "" then mutation = "None" end
+    
+    local weight = FruitVisualizerController:CalculateFruitWeight(fruit)
+    if not weight and FruitVisualizerController.CalculatePlantWeight then
+        weight = FruitVisualizerController:CalculatePlantWeight(fruit)
+    end
+    weight = tonumber(weight) or 0
+    
+    local fruitData = {
+        PlantId = plantId, FruitId = id, Name = name,
+        Weight = weight, Mutation = mutation, Instance = fruit
+    }
+    
+    if weight < 90 then
+        harvestQueue:push(fruitData)
+    elseif weight < 100 then
+        shovelQueue:push(fruitData)
+    else
+        if not keptFruitCache[id] then
+            keptFruitCache[id] = true
+            keptCount += 1
+            table.insert(keptFruitList, fruitData)
+            table.sort(keptFruitList, function(a, b) return a.Weight > b.Weight end)
+            webhookQueue:push(fruitData)
+        end
+    end
+end
+
+local function setupPlant(plant)
+    if plantConnections[plant] then return end
+    plantConnections[plant] = {}
+    local fruitsFolder = plant:WaitForChild("Fruits", 5)
+    if not fruitsFolder then return end
+    
+    for _, fruit in ipairs(fruitsFolder:GetChildren()) do processFruit(fruit, plant) end
+    
+    local addedConn = fruitsFolder.ChildAdded:Connect(function(fruit) task.defer(processFruit, fruit, plant) end)
+    local removedConn = fruitsFolder.ChildRemoved:Connect(function(fruit)
+        local id = fruit:GetAttribute("FruitId")
+        if id then removeKeptFruitState(id) end
+    end)
+    
+    table.insert(plantConnections[plant], addedConn)
+    table.insert(plantConnections[plant], removedConn)
+end
+
+local function cleanupPlant(plant)
+    local conns = plantConnections[plant]
+    if conns then
+        for _, conn in ipairs(conns) do conn:Disconnect() end
+        plantConnections[plant] = nil
+    end
+    local fruitsFolder = plant:FindFirstChild("Fruits")
+    if fruitsFolder then
+        for _, fruit in ipairs(fruitsFolder:GetChildren()) do
+            local id = fruit:GetAttribute("FruitId")
+            if id then removeKeptFruitState(id) end
+        end
+    end
+end
+
+if isFirstCycle then
+    runGlobalOptimizationSweep()
+    isFirstCycle = false
+end
+
+for _, plant in ipairs(myPlot.Plants:GetChildren()) do setupPlant(plant) end
+local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
+local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
+
+-- ============================================================================
+-- CONSUMER THREADS (AWARE OF EVENTS)
+-- ============================================================================
+
+-- Worker 1: Harvest Engine
+task.spawn(function()
+    while isScriptRunning do
+        -- OVERRIDE: Runs if regular AutoFarm is ON, OR if an Event Cleanup is active.
+        if (isAutoFarming or isEventActive) and not isMaintaining and harvestQueue:count() > 0 then
+            local data = harvestQueue:pop()
+            if data and data.Instance and data.Instance.Parent then
+                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                task.wait(HARVEST_INTERVAL)
+            end
+        else
+            task.wait(0.1) 
+        end
+    end
+end)
+
+-- Worker 2: Shovel Engine 
+task.spawn(function()
+    while isScriptRunning do
+        -- OVERRIDE: Runs if regular AutoFarm is ON, OR if an Event Cleanup is active.
+        if (isAutoFarming or isEventActive) and not isMaintaining and shovelQueue:count() > 0 then
+            local data = shovelQueue:pop()
+            if data and data.Instance and data.Instance.Parent then
+                local tool = getShovelTool()
+                if tool then
+                    local shovelType = tool:GetAttribute("Shovel")
+                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, shovelType, tool) end)
+                    task.wait(SHOVEL_INTERVAL)
+                else
+                    shovelQueue:push(data)
+                    task.wait(0.5) 
+                end
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 3: Webhook Batching Engine
+task.spawn(function()
+    while isScriptRunning do
+        if webhookQueue:count() > 0 then
+            task.wait(2) 
+            local batchedFruits = {}
+            while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
+            if #batchedFruits > 0 then
+                local title = string.format("剣 %d New Kept Fruit%s", #batchedFruits, #batchedFruits > 1 and "s" or "")
+                local descText = ""
+                for _, f in ipairs(batchedFruits) do
+                    descText ..= string.format("+ %s\n  %.2fkg\n  %s\n\n", f.Name, f.Weight, f.Mutation)
+                end
+                descText ..= string.format("**Total Kept:** %d", keptCount)
+                sendWebhook(WEBHOOK_URL, title, descText, 16766720) 
+                task.wait(0.5)
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- Worker 4: Main Coordinator & Maintenance Loop 
+task.spawn(function()
+    local wasProcessing = false
+    while isScriptRunning do
+        if isEventActive then
+            -- Let queues sweep during safe events; do NOT water or maintain sprinklers.
+            task.wait(1)
+        elseif isAutoFarming then
+            local harvestRemaining = harvestQueue:count()
+            local shovelRemaining = shovelQueue:count()
+            local totalTasks = harvestRemaining + shovelRemaining 
+
+            if totalTasks > 0 then
+                wasProcessing = true
+            elseif wasProcessing and totalTasks == 0 then
+                wasProcessing = false
+                isMaintaining = true
+                runMaintenanceCycle()
+                isMaintaining = false
+                runGlobalOptimizationSweep()
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- ============================================================================
+-- MINIMAL UI 
+-- ============================================================================
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AdminPanel"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(220, 215)
+frame.Position = UDim2.fromScale(0.02, 0.25)
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.fromOffset(8, 0)
+title.Font = Enum.Font.GothamBold
+title.Text = "Auto-Farm v48"
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Parent = titleBar
+
+local minimize = Instance.new("TextButton")
+minimize.Size = UDim2.fromOffset(25, 25)
+minimize.Position = UDim2.new(1, -55, 0, 2)
+minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90)
+minimize.Text = "-"
+minimize.Font = Enum.Font.GothamBold
+minimize.TextColor3 = Color3.new(1, 1, 1)
+minimize.TextSize = 18
+minimize.Parent = titleBar
+Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(25, 25)
+close.Position = UDim2.new(1, -28, 0, 2)
+close.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+close.Text = "X"
+close.Font = Enum.Font.GothamBold
+close.TextColor3 = Color3.new(1, 1, 1)
+close.TextSize = 14
+close.Parent = titleBar
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
+
+local content = Instance.new("Frame")
+content.BackgroundTransparency = 1
+content.Position = UDim2.fromOffset(0, 30)
+content.Size = UDim2.new(1, 0, 1, -30)
+content.Parent = frame
+
+local autoToggleBtn = Instance.new("TextButton")
+autoToggleBtn.Size = UDim2.new(1, -20, 0, 35)
+autoToggleBtn.Position = UDim2.new(0, 10, 0, 10)
+autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+autoToggleBtn.Text = "Auto-Farm: OFF"
+autoToggleBtn.Font = Enum.Font.GothamBold
+autoToggleBtn.TextSize = 14
+autoToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+autoToggleBtn.Parent = content
+Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
+
+local function createStatusLabel(yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 0, 20)
+    lbl.Position = UDim2.new(0, 12, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = content
+    return lbl
+end
+
+local stateLbl = createStatusLabel(55)
+local harvestLbl = createStatusLabel(80)
+local shovelLbl = createStatusLabel(105)
+local keptLbl = createStatusLabel(130)
+
+task.spawn(function()
+    local lastStateText, lastHarvestText, lastShovelText, lastKeptText = "", "", "", ""
+    while isScriptRunning do
+        local harvestRemaining = harvestQueue:count()
+        local shovelRemaining = shovelQueue:count()
+        
+        local harvestStr = "諺 Harvest State: " .. harvestRemaining
+        local shovelStr = "ｪShovel State: " .. shovelRemaining
+        local keptStr = "孱ｸKept Plant: " .. keptCount
+        local stateStr = "Status: Idle"
+        
+        if isEventActive then
+            stateStr = "Status: Event Cleanup Active!"
+            harvestStr = string.format("諺 Harvest State: Override (%d left)", harvestRemaining)
+            shovelStr = string.format("ｪShovel State: Override (%d left)", shovelRemaining)
+        elseif isAutoFarming then
+            if isMaintaining then
+                stateStr = "Status: Fixing Sprinklers..."
+            elseif harvestRemaining > 0 then
+                stateStr = "Status: Harvesting..."
+                harvestStr = string.format("諺 Harvest State: Active (%d left)", harvestRemaining)
+            elseif shovelRemaining > 0 then
+                stateStr = "Status: Shoveling..."
+                shovelStr = string.format("ｪShovel State: Active (%d left)", shovelRemaining)
+            else
+                stateStr = "Status: Processes running in background..."
+            end
+        else
+            stateStr = "Status: Idle (Paused)"
+        end
+        
+        if stateStr ~= lastStateText then lastStateText = stateStr stateLbl.Text = stateStr end
+        if harvestStr ~= lastHarvestText then lastHarvestText = harvestStr harvestLbl.Text = harvestStr end
+        if shovelStr ~= lastShovelText then lastShovelText = shovelStr shovelLbl.Text = shovelStr end
+        if keptStr ~= lastKeptText then lastKeptText = keptStr keptLbl.Text = keptStr end
+        
+        task.wait(0.3) 
+    end
+end)
+
+autoToggleBtn.MouseButton1Click:Connect(function()
+    isAutoFarming = not isAutoFarming
+    if isAutoFarming then
+        autoToggleBtn.Text = "Auto-Farm: ON"
+        autoToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+    else
+        autoToggleBtn.Text = "Auto-Farm: OFF"
+        autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+    end
+end)
+
+local minimized = false
+local expandedSize = frame.Size
+minimize.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        content.Visible = false
+        frame.Size = UDim2.fromOffset(expandedSize.X.Offset, 30)
+        minimize.Text = "+"
+    else
+        content.Visible = true
+        frame.Size = expandedSize
+        minimize.Text = "-"
+    end
+end)
+
+close.MouseButton1Click:Connect(function()
+    isAutoFarming = false 
+    isScriptRunning = false 
+    plantAddedConn:Disconnect()
+    plantRemovedConn:Disconnect()
+    for plant, _ in pairs(plantConnections) do cleanupPlant(plant) end
+    screenGui:Destroy()
+end)
