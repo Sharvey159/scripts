@@ -6,17 +6,17 @@ assert(request, "HTTP requests are not supported by this executor.")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local AVOID_WEATHER = {
-    Snowfall = true,
-    -- Blizzard = true,
-    -- Sandstorm = true,
+-- Replaced AVOID_WEATHER with SAFE_WEATHER. 
+-- Any weather NOT in this list will trigger a kick.
+local SAFE_WEATHER = {
+    Rain = true,
+    Sunburst = true,
 }
 
 local WEBHOOK_URL =
 	"https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD"
 local connections = {}
 local updating = {}
-
 
 local function sendWebhook(title, body, color, mention)
 	task.spawn(function()
@@ -27,7 +27,8 @@ local function sendWebhook(title, body, color, mention)
 				Headers = { ["Content-Type"] = "application/json" },
 				Body = HttpService:JSONEncode({
 					content = mention or "",
-					allowed_mentions = { users = { "604609802835853333" } },
+					-- Updated to allow dynamic parsing of both users and roles passed in the "content"
+					allowed_mentions = { parse = { "users", "roles" } },
 					embeds = {
 						{
 							title = title,
@@ -68,10 +69,12 @@ local function sendWeather(weatherName)
             updating[weatherName] = nil
             return
         end
+        
+        local remaining = math.max(0, endTime - os.time())
+        local formattedRemaining = formatTime(remaining)
 
-        if AVOID_WEATHER[weatherName] then
-            local remaining = math.max(0, endTime - os.time())
-
+        -- If weather is NOT Rain or Sunburst, initiate leave protocol
+        if not SAFE_WEATHER[weatherName] then
             local body = string.format(
                 "**Weather:** %s\n" ..
                 "🚪 Action: Leaving server\n" ..
@@ -79,35 +82,44 @@ local function sendWeather(weatherName)
                 "📅 Ends: <t:%d:R>\n" ..
                 "🕒 Exact: <t:%d:F>",
                 weatherName,
-                formatTime(remaining),
+                formattedRemaining,
                 endTime,
                 endTime
             )
 
+            -- Ping you so you know to rejoin
             sendWebhook("🚨 Avoided Weather", body, 0xE74C3C, "<@604609802835853333>")
 
             task.wait(1) -- Give the webhook time to send.
 
+            -- Added the duration to the kick message
             LocalPlayer:Kick(
                 string.format(
                     "Avoiding %s.\nRejoin in %s.",
                     weatherName,
-                    formatTime(remaining)
+                    formattedRemaining
                 )
             )
 
             return
         end
 
-        -- Existing webhook for weather you don't avoid
+        -- Safe Weather Webhook Logic
         local body = string.format(
             "**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>",
             weatherName,
             endTime,
             endTime
         )
+        
+        local mentionStr = "<@604609802835853333>"
+        
+        -- Add the specific role ping only when Sunburst appears
+        if weatherName == "Sunburst" then
+            mentionStr = mentionStr .. " <@&1522844669027815426>"
+        end
 
-        sendWebhook("🌦 Weather Event", body, 0x00BFFF, "<@604609802835853333>")
+        sendWebhook("🌦 Weather Event", body, 0x00BFFF, mentionStr)
 
         updating[weatherName] = nil
     end)
