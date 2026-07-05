@@ -298,6 +298,7 @@ local Config = {
         WeatherWatcher = false,
         FruitHelper = false,
         StockWatcher = true,
+        AuctionSniper = false,
     }
 }
 
@@ -314,7 +315,8 @@ local ScriptRegistry = {
     { Name = "Water Plant",              File = "water_plant.txt" },
     { Name = "Weather Watcher",          File = "weather_watcher.txt" },
     { Name = "Fruit Helper",             File = "fruit_helper.txt" },
-    { Name = "Stock Watcher",            File = "stock_watcher.txt" }
+    { Name = "Stock Watcher",            File = "stock_watcher.txt" },
+    { Name = "Auction Sniper",           File = "auction_sniper.txt" }
 }
 
 local function LoadScript(scriptInfo)
