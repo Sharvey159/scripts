@@ -88,8 +88,6 @@ local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     sendWebhook(webhookUrl, "🚨 Avoided Event", body, 0xE74C3C, mention)
 
     task.wait(1.5) -- Wait for webhook to send
-
-    LocalPlayer:Kick(string.format("Avoiding %s.\nRejoin in %s.", reason, formattedRemaining))
 end
 
 
