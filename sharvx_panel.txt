@@ -20,7 +20,8 @@ local Config = {
         MutationWatcher = false,
         WaterPlant = false,
         WeatherWatcher = false,
-        StockWatcher = false,
+        FruitHelper = false,
+        StockWatcher = true,
     }
 }
 
@@ -41,6 +42,7 @@ local ScriptRegistry = {
     { Name = "Mutation Watcher",         File = "mutation_watcher.txt" },
     { Name = "Water Plant",              File = "water_plant.txt" },
     { Name = "Weather Watcher",          File = "weather_watcher.txt" },
+    { Name = "Fruit Helper",          File = "fruit_helper.txt" },
     { Name = "Stock Watcher",            File = "stock_watcher.txt" }
 }
 
