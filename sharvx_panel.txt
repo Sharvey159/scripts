@@ -11,7 +11,7 @@ end
 --========================================================
 local Config = {
     AutoLoad = {
-        Wis = true,
+        Wis = false,
         AutoRemoveSmallFruits = false,
         FruitDropper = false,
         FruitSummary = false,
