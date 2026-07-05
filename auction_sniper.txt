@@ -11,16 +11,6 @@ local CONFIG = {
 			Name = "Super Watering Can (x3)",
 			TimerThreshold = 21,
 			PriceThreshold = nil -- Will only use TimerThreshold
-		},
-		{
-			Name = "Legendary Sprinkler",
-			TimerThreshold = 15,
-			PriceThreshold = 2500000 -- Will snipe if time <= 15 OR price <= 2.5m
-		},
-		{
-			Name = "Diamond Seed",
-			TimerThreshold = nil,
-			PriceThreshold = 500000 -- Will only snipe based on price
 		}
 	}
 }
