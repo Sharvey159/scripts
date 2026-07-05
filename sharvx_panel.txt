@@ -1,14 +1,290 @@
 --========================================================
--- GAME LOAD CHECK
+-- SHARVEY SCRIPT MANAGER v2.0.0
 --========================================================
 if not game:IsLoaded() then
     game.Loaded:Wait()
     task.wait(5)
 end
 
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
 --========================================================
--- CONFIG
+-- UI MODULE (STANDALONE)
 --========================================================
+local UI = {}
+
+local Theme = {
+    Background = Color3.fromRGB(20, 20, 20),
+    TopBar     = Color3.fromRGB(30, 30, 30),
+    Panels     = Color3.fromRGB(35, 35, 35),
+    Hover      = Color3.fromRGB(50, 50, 50),
+    Blue       = Color3.fromRGB(0, 120, 215),
+    Red        = Color3.fromRGB(220, 53, 69),
+    Text       = Color3.fromRGB(220, 220, 220)
+}
+
+local TweenConfig = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+-- Helper: Dragging Logic
+local function EnableDragging(handle, target)
+    local dragging, dragInput, dragStart, startPos
+    
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = target.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            target.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- Helper: Hover Animations
+local function ApplyHover(button)
+    button.MouseEnter:Connect(function()
+        TweenService:Create(button, TweenConfig, {BackgroundColor3 = Theme.Hover}):Play()
+    end)
+    button.MouseLeave:Connect(function()
+        TweenService:Create(button, TweenConfig, {BackgroundColor3 = Theme.Panels}):Play()
+    end)
+end
+
+-- Component: TopBar
+local function CreateTopBar(parent)
+    local TopBar = Instance.new("Frame")
+    TopBar.Size = UDim2.new(1, 0, 0, 35)
+    TopBar.BackgroundColor3 = Theme.TopBar
+    TopBar.BorderSizePixel = 0
+    TopBar.Parent = parent
+    
+    local Title = Instance.new("TextLabel")
+    Title.Name = "Title"
+    Title.Size = UDim2.new(1, -70, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "Sharvey Script Manager"
+    Title.TextColor3 = Theme.Text
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 13
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TopBar
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 35, 0, 35)
+    MinBtn.Position = UDim2.new(1, -70, 0, 0)
+    MinBtn.BackgroundTransparency = 1
+    MinBtn.Text = "_"
+    MinBtn.TextColor3 = Theme.Text
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.TextSize = 14
+    MinBtn.Parent = TopBar
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 35, 0, 35)
+    CloseBtn.Position = UDim2.new(1, -35, 0, 0)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Theme.Text
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.TextSize = 13
+    CloseBtn.Parent = TopBar
+    
+    return TopBar, MinBtn, CloseBtn, Title
+end
+
+-- Component: Scroll List
+local function CreateScrollList(parent)
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -20, 1, -45)
+    Scroll.Position = UDim2.new(0, 10, 0, 40)
+    Scroll.BackgroundTransparency = 1
+    Scroll.ScrollBarThickness = 2
+    Scroll.BorderSizePixel = 0
+    Scroll.Parent = parent
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 6)
+    Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    Layout.Parent = Scroll
+    
+    -- Automatic resizing
+    Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        Scroll.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y)
+    end)
+    
+    return Scroll
+end
+
+-- Component: Script Button
+local function CreateScriptButton(scriptInfo, parent, callbacks)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 34)
+    Button.BackgroundColor3 = Theme.Panels
+    Button.Text = scriptInfo.Name
+    Button.TextColor3 = Theme.Text
+    Button.Font = Enum.Font.GothamMedium
+    Button.TextSize = 13
+    Button.AutoButtonColor = false
+    Button.Parent = parent
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 6)
+    Corner.Parent = Button
+    
+    ApplyHover(Button)
+    
+    Button.MouseButton1Click:Connect(function()
+        if callbacks.LoadScript then
+            callbacks.LoadScript(scriptInfo)
+        end
+    end)
+end
+
+-- Component: Floating Mini Launcher
+local function CreateMiniLauncher(parent)
+    local Launcher = Instance.new("Frame")
+    Launcher.Size = UDim2.new(0, 130, 0, 35)
+    Launcher.BackgroundColor3 = Theme.TopBar
+    Launcher.Visible = false
+    Launcher.ClipsDescendants = true
+    Launcher.Parent = parent
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Launcher
+    
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(1, 0, 1, 0)
+    Btn.BackgroundTransparency = 1
+    Btn.Text = "📦 Sharvey"
+    Btn.TextColor3 = Theme.Text
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextSize = 13
+    Btn.Parent = Launcher
+    
+    return Launcher, Btn
+end
+
+-- Module Entry Point
+function UI.Create(callbacks, registry)
+    local UI_NAME = "SharveyScriptManagerUI"
+    if CoreGui:FindFirstChild(UI_NAME) then
+        CoreGui[UI_NAME]:Destroy()
+    end
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = UI_NAME
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = CoreGui
+    
+    -- Main Wrapper handles the footprint and layout
+    local Wrapper = Instance.new("Frame")
+    Wrapper.Size = UDim2.new(0, 280, 0, 400)
+    Wrapper.Position = UDim2.new(0.5, -140, 0.5, -200)
+    Wrapper.BackgroundTransparency = 1
+    Wrapper.Parent = ScreenGui
+    
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(1, 0, 1, 0)
+    MainFrame.BackgroundColor3 = Theme.Background
+    MainFrame.ClipsDescendants = true
+    MainFrame.Parent = Wrapper
+    
+    local MainCorner = Instance.new("UICorner")
+    MainCorner.CornerRadius = UDim.new(0, 8)
+    MainCorner.Parent = MainFrame
+    
+    -- Generate Layout
+    local TopBar, MinBtn, CloseBtn, TitleLbl = CreateTopBar(MainFrame)
+    local ScrollList = CreateScrollList(MainFrame)
+    local MiniLauncher, RestoreBtn = CreateMiniLauncher(ScreenGui)
+    
+    -- Dynamically generate script buttons
+    for _, scriptInfo in ipairs(registry) do
+        CreateScriptButton(scriptInfo, ScrollList, callbacks)
+    end
+    
+    -- Connect dragging (Main Window dragged by TopBar, Launcher dragged by itself)
+    EnableDragging(TopBar, Wrapper)
+    EnableDragging(MiniLauncher, MiniLauncher)
+    
+    -- API Object
+    local windowAPI = {}
+    local minimized = false
+    
+    function windowAPI:Minimize()
+        if minimized then return end
+        minimized = true
+        
+        -- Sync position to ensure the launcher appears right where the window was
+        MiniLauncher.Position = Wrapper.Position
+        
+        Wrapper.Visible = false
+        MiniLauncher.Size = UDim2.new(0, 40, 0, 35) -- Start small
+        MiniLauncher.Visible = true
+        
+        TweenService:Create(MiniLauncher, TweenConfig, {Size = UDim2.new(0, 130, 0, 35)}):Play()
+    end
+    
+    function windowAPI:Restore()
+        if not minimized then return end
+        minimized = false
+        
+        -- Sync main window back to where the launcher was dragged
+        Wrapper.Position = MiniLauncher.Position
+        
+        MiniLauncher.Visible = false
+        Wrapper.Visible = true
+    end
+    
+    function windowAPI:Destroy()
+        ScreenGui:Destroy()
+    end
+    
+    function windowAPI:SetTitle(text)
+        TitleLbl.Text = text
+    end
+    
+    -- Wire internal UI events
+    MinBtn.MouseButton1Click:Connect(function() windowAPI:Minimize() end)
+    RestoreBtn.MouseButton1Click:Connect(function() windowAPI:Restore() end)
+    
+    CloseBtn.MouseButton1Click:Connect(function()
+        if callbacks.Close then
+            callbacks.Close()
+        end
+    end)
+    
+    return windowAPI
+end
+
+--========================================================
+-- MAIN SCRIPT LOGIC
+--========================================================
+
 local Config = {
     AutoLoad = {
         Wis = false,
@@ -27,11 +303,6 @@ local Config = {
 
 local BASE_URL = "https://raw.githubusercontent.com/Sharvey159/scripts/main/"
 
---========================================================
--- SCRIPT REGISTRY
---========================================================
--- To add new scripts, simply insert them into this table.
--- The UI and AutoLoad will automatically support them.
 local ScriptRegistry = {
     { Name = "Wis",                      File = "https://api.wishub.cloud/files/loaders/dedcf9be947d43b8ae065ad21200c764.lua" },
     { Name = "Auto Remove Small Fruits", File = "auto_remove_small_fruits.txt" },
@@ -42,39 +313,17 @@ local ScriptRegistry = {
     { Name = "Mutation Watcher",         File = "mutation_watcher.txt" },
     { Name = "Water Plant",              File = "water_plant.txt" },
     { Name = "Weather Watcher",          File = "weather_watcher.txt" },
-    { Name = "Fruit Helper",          File = "fruit_helper.txt" },
+    { Name = "Fruit Helper",             File = "fruit_helper.txt" },
     { Name = "Stock Watcher",            File = "stock_watcher.txt" }
 }
 
---========================================================
--- SERVICES & GLOBALS
---========================================================
-local CoreGui = game:GetService("CoreGui")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-
-local UI_NAME = "SharveyScriptManagerUI"
-local isMinimized = false
-
--- Clean up existing UI if it exists
-if CoreGui:FindFirstChild(UI_NAME) then
-    CoreGui[UI_NAME]:Destroy()
-end
-
---========================================================
--- FUNCTIONS
---========================================================
-
--- Loads a single script with cache busting and error handling
 local function LoadScript(scriptInfo)
     local url = scriptInfo.File
     
-    -- If it's not a full web link, prepend the GitHub Base URL
     if not string.match(url, "^https?://") then
         url = BASE_URL .. url
     end
     
-    -- Cache busting (checks if URL already has query parameters)
     local finalUrl = url
     if string.find(finalUrl, "?") then
         finalUrl = finalUrl .. "&t=" .. os.time()
@@ -93,254 +342,39 @@ local function LoadScript(scriptInfo)
     end
 end
 
--- Loads all scripts in the registry
-local function LoadAllScripts()
-    for _, scriptInfo in ipairs(ScriptRegistry) do
-        LoadScript(scriptInfo)
-    end
-end
-
--- Reloads all scripts (cache busting handles the redownload automatically)
 local function ReloadAllScripts()
     for _, scriptInfo in ipairs(ScriptRegistry) do
         LoadScript(scriptInfo)
     end
 end
 
--- Checks the Config and auto-loads scripts set to true
 local function AutoLoadScripts()
     for _, scriptInfo in ipairs(ScriptRegistry) do
-        -- Strips spaces from the name to match the Config.AutoLoad keys
         local configKey = string.gsub(scriptInfo.Name, "%s+", "")
-        
         if Config.AutoLoad[configKey] then
             LoadScript(scriptInfo)
         end
     end
 end
 
--- Creates a hover tween effect for buttons
-local function ApplyButtonHover(button, originalColor, hoverColor)
-    button.MouseEnter:Connect(function()
-        TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = hoverColor}):Play()
-    end)
-    button.MouseLeave:Connect(function()
-        TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = originalColor}):Play()
-    end)
-end
-
--- Generates a single UI row for a script
-local function CreateScriptRow(scriptInfo, parentList)
-    local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, 0, 0, 35) -- Made row smaller
-    Row.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Row.BorderSizePixel = 0
-    Row.Parent = parentList
-    
-    local RowCorner = Instance.new("UICorner")
-    RowCorner.CornerRadius = UDim.new(0, 6)
-    RowCorner.Parent = Row
-    
-    local ScriptName = Instance.new("TextLabel")
-    ScriptName.Size = UDim2.new(1, -85, 1, 0)
-    ScriptName.Position = UDim2.new(0, 15, 0, 0)
-    ScriptName.BackgroundTransparency = 1
-    ScriptName.Text = scriptInfo.Name
-    ScriptName.TextColor3 = Color3.fromRGB(220, 220, 220)
-    ScriptName.Font = Enum.Font.GothamMedium
-    ScriptName.TextSize = 13 -- Slightly smaller text
-    ScriptName.TextXAlignment = Enum.TextXAlignment.Left
-    ScriptName.Parent = Row
-    
-    local LoadBtn = Instance.new("TextButton")
-    LoadBtn.Size = UDim2.new(0, 60, 0, 24) -- Smaller button
-    LoadBtn.Position = UDim2.new(1, -70, 0.5, -12)
-    LoadBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-    LoadBtn.Text = "Load"
-    LoadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    LoadBtn.Font = Enum.Font.GothamBold
-    LoadBtn.TextSize = 11
-    LoadBtn.Parent = Row
-    
-    local BtnCorner = Instance.new("UICorner")
-    BtnCorner.CornerRadius = UDim.new(0, 4)
-    BtnCorner.Parent = LoadBtn
-    
-    ApplyButtonHover(LoadBtn, Color3.fromRGB(0, 120, 215), Color3.fromRGB(0, 140, 255))
-    
-    LoadBtn.MouseButton1Click:Connect(function()
-        LoadScript(scriptInfo)
-    end)
-end
-
--- Builds the entire User Interface
-local function InitializeUI()
-    -- Base GUI
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = UI_NAME
-    ScreenGui.ResetOnSpawn = false
-    ScreenGui.Parent = CoreGui
-    
-    -- Main Container (Made significantly smaller)
-    local MainFrame = Instance.new("Frame")
-    MainFrame.Size = UDim2.new(0, 350, 0, 280)
-    MainFrame.Position = UDim2.new(0.5, -175, 0.5, -140)
-    MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    MainFrame.BorderSizePixel = 0
-    MainFrame.ClipsDescendants = true
-    MainFrame.Parent = ScreenGui
-    
-    local MainCorner = Instance.new("UICorner")
-    MainCorner.CornerRadius = UDim.new(0, 8)
-    MainCorner.Parent = MainFrame
-    
-    -- Top Bar
-    local TopBar = Instance.new("Frame")
-    TopBar.Size = UDim2.new(1, 0, 0, 35)
-    TopBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    TopBar.BorderSizePixel = 0
-    TopBar.Parent = MainFrame
-    
-    local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -80, 1, 0)
-    Title.Position = UDim2.new(0, 12, 0, 0)
-    Title.BackgroundTransparency = 1
-    Title.Text = "Sharvey Script Manager v1.5.0"
-    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Title.Font = Enum.Font.GothamBold
-    Title.TextSize = 14
-    Title.TextXAlignment = Enum.TextXAlignment.Left
-    Title.Parent = TopBar
-    
-    -- Window Controls (Minimize / Close)
-    local MinBtn = Instance.new("TextButton")
-    MinBtn.Size = UDim2.new(0, 35, 0, 35)
-    MinBtn.Position = UDim2.new(1, -70, 0, 0)
-    MinBtn.BackgroundTransparency = 1
-    MinBtn.Text = "_"
-    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-    MinBtn.Font = Enum.Font.GothamBold
-    MinBtn.TextSize = 14
-    MinBtn.Parent = TopBar
-    
-    local CloseBtn = Instance.new("TextButton")
-    CloseBtn.Size = UDim2.new(0, 35, 0, 35)
-    CloseBtn.Position = UDim2.new(1, -35, 0, 0)
-    CloseBtn.BackgroundTransparency = 1
-    CloseBtn.Text = "X"
-    CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-    CloseBtn.Font = Enum.Font.GothamBold
-    CloseBtn.TextSize = 13
-    CloseBtn.Parent = TopBar
-    
-    -- Scrollable List (Adjusted height for smaller window)
-    local ScrollFrame = Instance.new("ScrollingFrame")
-    ScrollFrame.Size = UDim2.new(1, -16, 1, -85)
-    ScrollFrame.Position = UDim2.new(0, 8, 0, 40)
-    ScrollFrame.BackgroundTransparency = 1
-    ScrollFrame.ScrollBarThickness = 4
-    ScrollFrame.BorderSizePixel = 0
-    ScrollFrame.Parent = MainFrame
-    
-    local UIListLayout = Instance.new("UIListLayout")
-    UIListLayout.Padding = UDim.new(0, 5)
-    UIListLayout.Parent = ScrollFrame
-    
-    -- Dynamically adjust scroll canvas size
-    UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y)
-    end)
-    
-    -- Populate Registry
-    for _, scriptInfo in ipairs(ScriptRegistry) do
-        CreateScriptRow(scriptInfo, ScrollFrame)
-    end
-    
-    -- Bottom Action Buttons (Resized for smaller width)
-    local BottomFrame = Instance.new("Frame")
-    BottomFrame.Size = UDim2.new(1, 0, 0, 45)
-    BottomFrame.Position = UDim2.new(0, 0, 1, -45)
-    BottomFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-    BottomFrame.BorderSizePixel = 0
-    BottomFrame.Parent = MainFrame
-    
-    local function CreateBottomButton(text, pos, color, parent)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, 100, 0, 26) -- Smaller buttons
-        btn.Position = pos
-        btn.BackgroundColor3 = color
-        btn.Text = text
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.Font = Enum.Font.GothamBold
-        btn.TextSize = 12
-        btn.Parent = parent
-        
-        local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 5)
-        corner.Parent = btn
-        
-        return btn
-    end
-    
-    -- Adjusted positioning for the 350px wide frame
-    local LoadAllBtn = CreateBottomButton("Load All", UDim2.new(0, 12, 0.5, -13), Color3.fromRGB(40, 167, 69), BottomFrame)
-    ApplyButtonHover(LoadAllBtn, Color3.fromRGB(40, 167, 69), Color3.fromRGB(45, 185, 75))
-    
-    local ReloadAllBtn = CreateBottomButton("Reload All", UDim2.new(0.5, -50, 0.5, -13), Color3.fromRGB(255, 165, 0), BottomFrame)
-    ApplyButtonHover(ReloadAllBtn, Color3.fromRGB(255, 165, 0), Color3.fromRGB(255, 180, 30))
-    
-    local CloseAllBtn = CreateBottomButton("Close UI", UDim2.new(1, -112, 0.5, -13), Color3.fromRGB(220, 53, 69), BottomFrame)
-    ApplyButtonHover(CloseAllBtn, Color3.fromRGB(220, 53, 69), Color3.fromRGB(235, 60, 75))
-    
-    -- Button Connections
-    LoadAllBtn.MouseButton1Click:Connect(LoadAllScripts)
-    ReloadAllBtn.MouseButton1Click:Connect(ReloadAllScripts)
-    CloseAllBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
-    CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
-    
-    MinBtn.MouseButton1Click:Connect(function()
-        isMinimized = not isMinimized
-        local targetSize = isMinimized and UDim2.new(0, 350, 0, 35) or UDim2.new(0, 350, 0, 280)
-        TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
-    end)
-    
-    -- Smooth Dragging Logic
-    local dragging, dragInput, dragStart, startPos
-    
-    local function update(input)
-        local delta = input.Position - dragStart
-        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-    
-    TopBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = MainFrame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    
-    TopBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            update(input)
-        end
-    end)
-end
-
 --========================================================
--- EXECUTION
+-- INITIALIZATION
 --========================================================
-InitializeUI()
+
+local activeWindow = nil
+
+local Callbacks = {
+    LoadScript = LoadScript,
+    Close = function()
+        if activeWindow then
+            activeWindow:Destroy()
+        end
+    end
+}
+
+-- Create the UI completely decoupled from logic
+activeWindow = UI.Create(Callbacks, ScriptRegistry)
+activeWindow:SetTitle("Sharvey Script Manager v2.0.0")
+
+-- Execute core mechanics
 AutoLoadScripts()
