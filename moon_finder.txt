@@ -350,7 +350,9 @@ local function runMaintenanceCycle()
         local waterTool = equipTool(WATERING_CAN_NAME)
         if waterTool then
             pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
-            task.wait(0.5) task.wait(10)
+            task.wait(2) 
+            runGlobalOptimizationSweep()
+            task.wait(10)
             getShovelTool() 
         end
     end
