@@ -1,0 +1,346 @@
+-- ============================================================
+-- GAG2 Delivery Input Helper V1
+-- - Standalone delivery string generator for GAG2 Alt Picker
+-- - Intelligent greedy partitioning for balanced drops
+-- - Live bid price fetching mirroring the Fruit Dropper
+-- ============================================================
+if game:GetService("CoreGui"):FindFirstChild("GAG_InputHelper") then
+	game:GetService("CoreGui").GAG_InputHelper:Destroy()
+end
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local RS = game:GetService("ReplicatedStorage")
+local lp = Players.LocalPlayer
+local Networking = require(RS.SharedModules.Networking)
+
+-- =====================
+-- COLORS & STYLING
+-- =====================
+local C = {
+	bg = Color3.fromRGB(14, 14, 20),
+	panel = Color3.fromRGB(20, 20, 28),
+	border = Color3.fromRGB(42, 42, 58),
+	accent = Color3.fromRGB(90, 210, 130),
+	text = Color3.fromRGB(215, 215, 228),
+	muted = Color3.fromRGB(100, 100, 120),
+	header = Color3.fromRGB(18, 18, 26),
+	danger = Color3.fromRGB(220, 80, 80),
+	dangerDim = Color3.fromRGB(70, 25, 25),
+	gold = Color3.fromRGB(255, 195, 55),
+	locked = Color3.fromRGB(255, 165, 0),
+}
+
+-- =====================
+-- UI CREATION
+-- =====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "GAG_InputHelper"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+
+local WIN_W, WIN_H = 300, 310
+
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.new(0, WIN_W, 0, WIN_H)
+main.Position = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
+main.BackgroundColor3 = C.bg
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.ClipsDescendants = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+local ms = Instance.new("UIStroke", main)
+ms.Color = C.border
+ms.Thickness = 1
+
+local function mkFrame(parent, size, pos, color, radius)
+	local f = Instance.new("Frame", parent)
+	f.Size = size
+	f.Position = pos
+	f.BackgroundColor3 = color or C.panel
+	f.BorderSizePixel = 0
+	if radius then Instance.new("UICorner", f).CornerRadius = UDim.new(0, radius) end
+	return f
+end
+
+local function mkLabel(parent, text, size, pos, color, fs, bold)
+	local l = Instance.new("TextLabel", parent)
+	l.BackgroundTransparency = 1
+	l.Size = size
+	l.Position = pos
+	l.Text = text
+	l.TextColor3 = color or C.text
+	l.TextSize = fs or 11
+	l.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	return l
+end
+
+local function mkInput(parent, placeholder, size, pos)
+	local f = mkFrame(parent, size, pos, C.panel, 4)
+	Instance.new("UIStroke", f).Color = C.border
+	local box = Instance.new("TextBox", f)
+	box.Size = UDim2.new(1, -10, 1, 0)
+	box.Position = UDim2.new(0, 5, 0, 0)
+	box.BackgroundTransparency = 1
+	box.Text = ""
+	box.TextColor3 = C.gold
+	box.TextSize = 11
+	box.Font = Enum.Font.GothamBold
+	box.PlaceholderText = placeholder
+	box.PlaceholderColor3 = C.muted
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.ClearTextOnFocus = false
+	return box
+end
+
+local function mkBtn(parent, text, size, pos, bg, fg, cb)
+	local b = Instance.new("TextButton", parent)
+	b.Size = size
+	b.Position = pos
+	b.BackgroundColor3 = bg
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = fg
+	b.TextSize = 11
+	b.Font = Enum.Font.GothamBold
+	b.AutoButtonColor = false
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+	if cb then b.MouseButton1Click:Connect(cb) end
+	return b
+end
+
+-- Header
+local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
+mkLabel(hdr, "📦 DELIVERY INPUT HELPER", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 11, true)
+local minimised = false
+local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
+	minimised = not minimised
+	main.Size = minimised and UDim2.new(0, WIN_W, 0, 32) or UDim2.new(0, WIN_W, 0, WIN_H)
+	minBtn.Text = minimised and "□" or "—"
+end)
+mkBtn(hdr, "✕", UDim2.new(0, 24, 0, 20), UDim2.new(1, -28, 0.5, -10), C.dangerDim, C.danger, function() gui:Destroy() end)
+
+-- Configuration Inputs
+mkLabel(main, "Accounts:", UDim2.new(0, 60, 0, 20), UDim2.new(0, 12, 0, 42), C.text, 10)
+local accountsInput = mkInput(main, "e.g. 8", UDim2.new(0, 60, 0, 24), UDim2.new(0, 75, 0, 40))
+
+mkLabel(main, "Filter:", UDim2.new(0, 60, 0, 20), UDim2.new(0, 150, 0, 42), C.text, 10)
+local filterInput = mkInput(main, "e.g. <100", UDim2.new(0, 80, 0, 24), UDim2.new(0, 200, 0, 40))
+
+mkLabel(main, "Overshoot:", UDim2.new(0, 60, 0, 20), UDim2.new(0, 12, 0, 72), C.text, 10)
+local overshootInput = mkInput(main, "e.g. 3", UDim2.new(0, 60, 0, 24), UDim2.new(0, 75, 0, 70))
+
+local ignoreLockedBtn = mkBtn(main, "Ignore Locked: ON", UDim2.new(0, 130, 0, 24), UDim2.new(0, 150, 0, 70), C.locked, C.bg)
+local ignoreLocked = true
+ignoreLockedBtn.MouseButton1Click:Connect(function()
+	ignoreLocked = not ignoreLocked
+	ignoreLockedBtn.Text = ignoreLocked and "Ignore Locked: ON" or "Ignore Locked: OFF"
+	ignoreLockedBtn.BackgroundColor3 = ignoreLocked and C.locked or C.panel
+	ignoreLockedBtn.TextColor3 = ignoreLocked and C.bg or C.muted
+end)
+
+local copyToggleBtn = mkBtn(main, "Auto Copy: ON", UDim2.new(1, -24, 0, 20), UDim2.new(0, 12, 0, 104), Color3.fromRGB(30, 60, 100), C.text)
+local autoCopy = true
+copyToggleBtn.MouseButton1Click:Connect(function()
+	autoCopy = not autoCopy
+	copyToggleBtn.Text = autoCopy and "Auto Copy: ON" or "Auto Copy: OFF"
+	copyToggleBtn.BackgroundColor3 = autoCopy and Color3.fromRGB(30, 60, 100) or C.panel
+end)
+
+-- Main Actions
+local generateBtn = mkBtn(main, "🚀 Generate Input", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 0, 134), C.accent, C.bg)
+
+mkLabel(main, "Generated Input", UDim2.new(1, -24, 0, 16), UDim2.new(0, 12, 0, 174), C.muted, 10)
+local outputBox = mkInput(main, "Waiting...", UDim2.new(1, -24, 0, 28), UDim2.new(0, 12, 0, 192))
+outputBox.TextEditable = false
+outputBox.ClearTextOnFocus = false
+
+local copyBtn = mkBtn(main, "📋 Copy Again", UDim2.new(1, -24, 0, 26), UDim2.new(0, 12, 0, 230), C.panel, C.text)
+
+local statusLbl = mkLabel(main, "✔ Ready", UDim2.new(1, -24, 0, 20), UDim2.new(0, 12, 0, 270), C.accent, 10)
+
+-- =====================
+-- FILTER PARSER
+-- =====================
+local function parseComparison(text)
+	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
+	if min and max then return { type = "range", min = tonumber(min), max = tonumber(max) } end
+	local n = text:match("^>=([%d%.]+)$")
+	if n then return { type = "gte", value = tonumber(n) } end
+	n = text:match("^<=([%d%.]+)$")
+	if n then return { type = "lte", value = tonumber(n) } end
+	n = text:match("^>([%d%.]+)$")
+	if n then return { type = "gt", value = tonumber(n) } end
+	n = text:match("^<([%d%.]+)$")
+	if n then return { type = "lt", value = tonumber(n) } end
+	return nil
+end
+
+local function matchesFilter(value, filter)
+	if not filter then return true end
+	if filter.type == "gt" then return value > filter.value
+	elseif filter.type == "lt" then return value < filter.value
+	elseif filter.type == "gte" then return value >= filter.value
+	elseif filter.type == "lte" then return value <= filter.value
+	elseif filter.type == "range" then return value > filter.min and value < filter.max end
+	return false
+end
+
+-- =====================
+-- INVENTORY SCANNING
+-- =====================
+local function scanInventory(filterObj)
+	local bp = lp:FindFirstChildOfClass("Backpack")
+	local char = lp.Character
+	local containers = {}
+	if bp then table.insert(containers, bp) end
+	if char then table.insert(containers, char) end
+
+	local FruitStockMultipliers = {}
+	local success, snapshot = pcall(function() return Networking.FruitStock.Request:Fire() end)
+	if success and snapshot and snapshot.entries then
+		for fruitName, info in pairs(snapshot.entries) do
+			FruitStockMultipliers[fruitName] = info.multiplier or 1
+		end
+	end
+
+	local fruits = {}
+	for _, container in ipairs(containers) do
+		for _, item in ipairs(container:GetChildren()) do
+			local isFav = item:GetAttribute("IsFavorite") or false
+			if item:GetAttribute("HarvestedFruit") and item:GetAttribute("Id") then
+				if ignoreLocked and isFav then continue end
+				
+				local id = item:GetAttribute("Id")
+				local name = item:GetAttribute("FruitName") or item.Name
+				local ok, result = pcall(function() return Networking.NPCS.GetFruitBid:Fire(id) end)
+				
+				if ok and result then
+					local currentValue = (result.CurrentSellValue or result.CurrentOffer or result.BidPrice or 0) / 1000000
+					local multiplier = FruitStockMultipliers[name] or 1
+					local finalValue = currentValue / multiplier
+					
+					if matchesFilter(finalValue, filterObj) then
+						table.insert(fruits, finalValue)
+					end
+				end
+			end
+		end
+	end
+	return fruits
+end
+
+-- =====================
+-- BALANCING ALGORITHM (LPT + Refinement)
+-- =====================
+local function calculateOptimalTarget(fruits, numAccounts)
+	if #fruits == 0 or numAccounts <= 0 then return 0 end
+	
+	-- Sort descending (Longest Processing Time First)
+	table.sort(fruits, function(a, b) return a > b end)
+	
+	-- Initialize buckets for each account
+	local buckets = {}
+	for i = 1, numAccounts do buckets[i] = 0 end
+	
+	-- Greedy placement: assign to the bucket with the lowest sum
+	for _, val in ipairs(fruits) do
+		local minIdx = 1
+		local minVal = buckets[1]
+		for i = 2, numAccounts do
+			if buckets[i] < minVal then
+				minVal = buckets[i]
+				minIdx = i
+			end
+		end
+		buckets[minIdx] = buckets[minIdx] + val
+	end
+	
+	-- The lowest bucket dictates the safest guaranteed target for ALL accounts
+	local minTarget = buckets[1]
+	for i = 2, numAccounts do
+		if buckets[i] < minTarget then
+			minTarget = buckets[i]
+		end
+	end
+	
+	return math.floor(minTarget)
+end
+
+-- =====================
+-- PIPELINE
+-- =====================
+generateBtn.MouseButton1Click:Connect(function()
+	generateBtn.Text = "⏳ Scanning..."
+	statusLbl.Text = "Scanning inventory & live bids..."
+	statusLbl.TextColor3 = C.muted
+	task.wait(0.1)
+
+	local accountsStr = accountsInput.Text
+	local filterStr = filterInput.Text
+	local overshootStr = overshootInput.Text
+	
+	local accounts = tonumber(accountsStr)
+	if not accounts or accounts <= 0 then
+		statusLbl.Text = "❌ Invalid Accounts number"
+		statusLbl.TextColor3 = C.danger
+		generateBtn.Text = "🚀 Generate Input"
+		return
+	end
+	
+	local filterObj = filterStr ~= "" and parseComparison(filterStr) or nil
+	if filterStr ~= "" and not filterObj then
+		statusLbl.Text = "❌ Invalid Filter format"
+		statusLbl.TextColor3 = C.danger
+		generateBtn.Text = "🚀 Generate Input"
+		return
+	end
+	
+	local overshoot = tonumber(overshootStr) or 3 -- Default to 3 if empty
+
+	-- 1. & 2. & 3. Scan, Retrieve, Filter
+	local validFruits = scanInventory(filterObj)
+	
+	if #validFruits == 0 then
+		statusLbl.Text = "❌ No fruits matching criteria"
+		statusLbl.TextColor3 = C.danger
+		generateBtn.Text = "🚀 Generate Input"
+		return
+	end
+
+	-- 4. & 5. & 6. Calculate & Balance
+	local targetValue = calculateOptimalTarget(validFruits, accounts)
+	
+	if targetValue <= 0 then
+		statusLbl.Text = "❌ Not enough value for " .. accounts .. " accounts"
+		statusLbl.TextColor3 = C.danger
+		generateBtn.Text = "🚀 Generate Input"
+		return
+	end
+
+	-- 8. Generate Output
+	local outputString = string.format("%d~%d%sx%d", targetValue, overshoot, filterStr, accounts)
+	outputBox.Text = outputString
+	
+	-- 9. Clipboard
+	if autoCopy then
+		pcall(function() setclipboard(outputString) end)
+		statusLbl.Text = "✔ Copied to Clipboard!"
+	else
+		statusLbl.Text = "✔ Generation Complete"
+	end
+	statusLbl.TextColor3 = C.accent
+	generateBtn.Text = "🚀 Generate Input"
+end)
+
+copyBtn.MouseButton1Click:Connect(function()
+	if outputBox.Text ~= "" and outputBox.Text ~= "Waiting..." then
+		pcall(function() setclipboard(outputBox.Text) end)
+		statusLbl.Text = "✔ Copied to Clipboard!"
+		statusLbl.TextColor3 = C.accent
+	end
+end)
