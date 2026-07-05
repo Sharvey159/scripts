@@ -665,7 +665,7 @@ task.spawn(function()
     while isScriptRunning do
         if fruitProcessingQueue:count() > 0 then
             local processed = 0
-            while fruitProcessingQueue:count() > 0 and processed < 15 do
+            while fruitProcessingQueue:count() > 0 and processed < 75 do
                 local data = fruitProcessingQueue:pop()
                 if data and data.fruit and data.plant and data.fruit.Parent then 
                     processFruit(data.fruit, data.plant, data.isBaseline) 
