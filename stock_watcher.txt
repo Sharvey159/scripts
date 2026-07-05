@@ -57,7 +57,7 @@ local function UpdateStocks(snapshot)
 		table.insert(lines, string.format("%-20s x%.2f (%s)", fruit.Name, fruit.Multiplier, fruit.Tier))
 
 		-- Ping when Venom Spitter reaches 4x+
-		if fruit.Name == "Venom Spitter" and fruit.Multiplier >= 2 then
+		if fruit.Name == "Moon Bloom" and fruit.Multiplier >= 4 then
 			mention = "<@604609802835853333>"
 			break
 		end
