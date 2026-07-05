@@ -1,8 +1,9 @@
 -- ============================================================
--- GAG2 Delivery Input Helper V1
+-- GAG2 Delivery Input Helper V2
 -- - Standalone delivery string generator for GAG2 Alt Picker
 -- - Intelligent greedy partitioning for balanced drops
 -- - Live bid price fetching mirroring the Fruit Dropper
+-- - Fully dynamic data-driven overshoot calculation
 -- ============================================================
 if game:GetService("CoreGui"):FindFirstChild("GAG_InputHelper") then
 	game:GetService("CoreGui").GAG_InputHelper:Destroy()
@@ -41,7 +42,7 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
-local WIN_W, WIN_H = 300, 310
+local WIN_W, WIN_H = 300, 280
 
 local main = Instance.new("Frame", gui)
 main.Size = UDim2.new(0, WIN_W, 0, WIN_H)
@@ -115,7 +116,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "📦 DELIVERY INPUT HELPER", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 11, true)
+mkLabel(hdr, "📦 DELIVERY INPUT HELPER V2", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 10, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -131,10 +132,8 @@ local accountsInput = mkInput(main, "e.g. 8", UDim2.new(0, 60, 0, 24), UDim2.new
 mkLabel(main, "Filter:", UDim2.new(0, 60, 0, 20), UDim2.new(0, 150, 0, 42), C.text, 10)
 local filterInput = mkInput(main, "e.g. <100", UDim2.new(0, 80, 0, 24), UDim2.new(0, 200, 0, 40))
 
-mkLabel(main, "Overshoot:", UDim2.new(0, 60, 0, 20), UDim2.new(0, 12, 0, 72), C.text, 10)
-local overshootInput = mkInput(main, "e.g. 3", UDim2.new(0, 60, 0, 24), UDim2.new(0, 75, 0, 70))
-
-local ignoreLockedBtn = mkBtn(main, "Ignore Locked: ON", UDim2.new(0, 130, 0, 24), UDim2.new(0, 150, 0, 70), C.locked, C.bg)
+-- Toggles (Rearranged side-by-side to fill the gap)
+local ignoreLockedBtn = mkBtn(main, "Ignore Locked: ON", UDim2.new(0, 130, 0, 24), UDim2.new(0, 12, 0, 70), C.locked, C.bg)
 local ignoreLocked = true
 ignoreLockedBtn.MouseButton1Click:Connect(function()
 	ignoreLocked = not ignoreLocked
@@ -143,7 +142,7 @@ ignoreLockedBtn.MouseButton1Click:Connect(function()
 	ignoreLockedBtn.TextColor3 = ignoreLocked and C.bg or C.muted
 end)
 
-local copyToggleBtn = mkBtn(main, "Auto Copy: ON", UDim2.new(1, -24, 0, 20), UDim2.new(0, 12, 0, 104), Color3.fromRGB(30, 60, 100), C.text)
+local copyToggleBtn = mkBtn(main, "Auto Copy: ON", UDim2.new(0, 134, 0, 24), UDim2.new(0, 154, 0, 70), Color3.fromRGB(30, 60, 100), C.text)
 local autoCopy = true
 copyToggleBtn.MouseButton1Click:Connect(function()
 	autoCopy = not autoCopy
@@ -152,16 +151,16 @@ copyToggleBtn.MouseButton1Click:Connect(function()
 end)
 
 -- Main Actions
-local generateBtn = mkBtn(main, "🚀 Generate Input", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 0, 134), C.accent, C.bg)
+local generateBtn = mkBtn(main, "🚀 Generate Input", UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 0, 104), C.accent, C.bg)
 
-mkLabel(main, "Generated Input", UDim2.new(1, -24, 0, 16), UDim2.new(0, 12, 0, 174), C.muted, 10)
-local outputBox = mkInput(main, "Waiting...", UDim2.new(1, -24, 0, 28), UDim2.new(0, 12, 0, 192))
+mkLabel(main, "Generated Input", UDim2.new(1, -24, 0, 16), UDim2.new(0, 12, 0, 144), C.muted, 10)
+local outputBox = mkInput(main, "Waiting...", UDim2.new(1, -24, 0, 28), UDim2.new(0, 12, 0, 162))
 outputBox.TextEditable = false
 outputBox.ClearTextOnFocus = false
 
-local copyBtn = mkBtn(main, "📋 Copy Again", UDim2.new(1, -24, 0, 26), UDim2.new(0, 12, 0, 230), C.panel, C.text)
+local copyBtn = mkBtn(main, "📋 Copy Again", UDim2.new(1, -24, 0, 26), UDim2.new(0, 12, 0, 200), C.panel, C.text)
 
-local statusLbl = mkLabel(main, "✔ Ready", UDim2.new(1, -24, 0, 20), UDim2.new(0, 12, 0, 270), C.accent, 10)
+local statusLbl = mkLabel(main, "✔ Ready", UDim2.new(1, -24, 0, 20), UDim2.new(0, 12, 0, 240), C.accent, 10)
 
 -- =====================
 -- FILTER PARSER
@@ -235,7 +234,7 @@ local function scanInventory(filterObj)
 end
 
 -- =====================
--- BALANCING ALGORITHM (LPT + Refinement)
+-- BALANCING & OVERSHOOT ALGORITHMS
 -- =====================
 local function calculateOptimalTarget(fruits, numAccounts)
 	if #fruits == 0 or numAccounts <= 0 then return 0 end
@@ -271,6 +270,53 @@ local function calculateOptimalTarget(fruits, numAccounts)
 	return math.floor(minTarget)
 end
 
+local function CalculateDynamicOvershoot(fruits, numAccounts, targetValue)
+	if #fruits == 0 or numAccounts <= 0 then return 0 end
+	
+	table.sort(fruits, function(a, b) return a > b end)
+	
+	local totalValue = 0
+	for _, val in ipairs(fruits) do
+		totalValue = totalValue + val
+	end
+	
+	local avgFruit = totalValue / #fruits
+	local maxFruit = fruits[1]
+	
+	-- Re-simulate greedy partitioning to find the required balancing margin
+	local buckets = {}
+	for i = 1, numAccounts do buckets[i] = 0 end
+	
+	for _, val in ipairs(fruits) do
+		local minIdx = 1
+		local minVal = buckets[1]
+		for i = 2, numAccounts do
+			if buckets[i] < minVal then
+				minVal = buckets[i]
+				minIdx = i
+			end
+		end
+		buckets[minIdx] = buckets[minIdx] + val
+	end
+	
+	local maxBucket = buckets[1]
+	for i = 2, numAccounts do
+		if buckets[i] > maxBucket then
+			maxBucket = buckets[i]
+		end
+	end
+	
+	-- The empirical overshoot derived from the greedy distribution difference
+	local empiricalOvershoot = maxBucket - targetValue
+	
+	-- Estimated packing error margin to accommodate non-perfect runtime sorting/grabbing
+	local packingErrorMargin = (maxFruit * 0.15) + (avgFruit * 0.25)
+	
+	local calculatedOvershoot = math.ceil(empiricalOvershoot + packingErrorMargin)
+	
+	return math.max(0, calculatedOvershoot)
+end
+
 -- =====================
 -- PIPELINE
 -- =====================
@@ -282,7 +328,6 @@ generateBtn.MouseButton1Click:Connect(function()
 
 	local accountsStr = accountsInput.Text
 	local filterStr = filterInput.Text
-	local overshootStr = overshootInput.Text
 	
 	local accounts = tonumber(accountsStr)
 	if not accounts or accounts <= 0 then
@@ -299,10 +344,8 @@ generateBtn.MouseButton1Click:Connect(function()
 		generateBtn.Text = "🚀 Generate Input"
 		return
 	end
-	
-	local overshoot = tonumber(overshootStr) or 3 -- Default to 3 if empty
 
-	-- 1. & 2. & 3. Scan, Retrieve, Filter
+	-- 1. Scan, Retrieve, Filter
 	local validFruits = scanInventory(filterObj)
 	
 	if #validFruits == 0 then
@@ -312,7 +355,7 @@ generateBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	-- 4. & 5. & 6. Calculate & Balance
+	-- 2. Calculate Balance & Overshoot Dynamically
 	local targetValue = calculateOptimalTarget(validFruits, accounts)
 	
 	if targetValue <= 0 then
@@ -322,11 +365,13 @@ generateBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	-- 8. Generate Output
-	local outputString = string.format("%d~%d%sx%d", targetValue, overshoot, filterStr, accounts)
+	local dynamicOvershoot = CalculateDynamicOvershoot(validFruits, accounts, targetValue)
+
+	-- 3. Generate Output
+	local outputString = string.format("%d~%d%sx%d", targetValue, dynamicOvershoot, filterStr, accounts)
 	outputBox.Text = outputString
 	
-	-- 9. Clipboard
+	-- 4. Clipboard
 	if autoCopy then
 		pcall(function() setclipboard(outputString) end)
 		statusLbl.Text = "✔ Copied to Clipboard!"
