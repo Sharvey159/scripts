@@ -3,7 +3,7 @@
 -- - Auto pickup loop (DroppedItems proximity prompt)
 -- - Backpack scan with live bid prices (delivery / locked split)
 -- - Webhook send
--- - Drop by Value (delivery mode)
+-- - Drop by Value (delivery mode) with rep support (xNum)
 -- ============================================================
 if game:GetService("CoreGui"):FindFirstChild("GAG_AltPicker") then
 	game:GetService("CoreGui").GAG_AltPicker:Destroy()
@@ -185,7 +185,7 @@ end
 
 -- Header
 local hdr = mkFrame(main, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 0), C.header, 10)
-mkLabel(hdr, "🎒 ALT PICKER V7", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
+mkLabel(hdr, "🎒 ALT PICKER V8", UDim2.new(1, -60, 1, 0), UDim2.new(0, 12, 0, 0), C.accent, 12, true)
 local minimised = false
 local minBtn = mkBtn(hdr, "—", UDim2.new(0, 24, 0, 20), UDim2.new(1, -54, 0.5, -10), C.border, C.muted, function()
 	minimised = not minimised
@@ -634,20 +634,6 @@ local droppingByVal = false
 -- Default overshoot allowance for target mode; overridden per-input with "~"
 local DEFAULT_ALLOWED_THRESHOLD = 3
 
--- Supported dropValInput formats:
---   "50"        -> target mode: drop fruit totaling ~50, largest value first
---                  (default overshoot allowance: DEFAULT_ALLOWED_THRESHOLD)
---   "50~5"      -> same, but allow up to 5 overshoot instead of the default
---   ">10"       -> drop every fruit valued > 10
---   "<10"       -> drop every fruit valued < 10
---   ">=10"      -> drop every fruit valued >= 10
---   "<=10"      -> drop every fruit valued <= 10
---   ">10<50"    -> drop every fruit valued between 10 and 50 (exclusive)
---   "50<10"     -> target mode, only consider fruit valued < 10
---   "50~5<10"   -> target mode, 5 overshoot allowed, only fruit valued < 10
---   "50>=10"    -> target mode, only consider fruit valued >= 10 (etc.)
-
--- Parses a standalone comparison filter: ">X", "<X", ">=X", "<=X", ">min<max"
 local function parseComparison(text)
 	local min, max = text:match("^>([%d%.]+)<([%d%.]+)$")
 	if min and max then
@@ -684,12 +670,17 @@ end
 local function parseDropInput(text)
 	text = text:gsub("%s+", "")
 
-	-- Leading number = target mode, optionally followed by "~<threshold>"
-	-- and/or a trailing comparison filter (parsed via parseComparison).
-	local targetStr, thresholdStr, rest = text:match("^([%d%.]+)~([%d%.]+)(.*)$")
+	-- Extract optional 'x' multiplier at the end (e.g., x8)
+	local baseText, repeatCountStr = text:match("^(.-)x(%d+)$")
+	if not baseText then
+		baseText = text
+	end
+	local repeatCount = repeatCountStr and tonumber(repeatCountStr) or 1
+
+	local targetStr, thresholdStr, rest = baseText:match("^([%d%.]+)~([%d%.]+)(.*)$")
 
 	if not targetStr then
-		targetStr, rest = text:match("^([%d%.]+)(.-)$")
+		targetStr, rest = baseText:match("^([%d%.]+)(.-)$")
 	end
 
 	if targetStr then
@@ -702,6 +693,7 @@ local function parseDropInput(text)
 			type = "target",
 			value = targetVal,
 			threshold = thresholdStr and tonumber(thresholdStr) or DEFAULT_ALLOWED_THRESHOLD,
+			repetitions = repeatCount -- Added repetitions property
 		}
 
 		if rest ~= "" then
@@ -714,8 +706,11 @@ local function parseDropInput(text)
 		return filter
 	end
 
-	-- No leading number -> standalone comparison filter
-	return parseComparison(text)
+	local filter = parseComparison(baseText)
+	if filter then
+		filter.repetitions = repeatCount
+	end
+	return filter
 end
 
 local function matchesFilter(value, filter)
@@ -761,79 +756,6 @@ dropValBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local queue = {}
-	local total = 0
-
-	local function rebuildQueue()
-		table.clear(queue)
-		total = 0
-
-		local sorted = {}
-
-		for _, e in ipairs(backpackFruits) do
-			if not e.favorite then
-				table.insert(sorted, e)
-			end
-		end
-
-		table.sort(sorted, function(a, b)
-			return a.value > b.value
-		end)
-
-		if filter.type == "target" then
-			local ALLOWED_THRESHOLD = filter.threshold or DEFAULT_ALLOWED_THRESHOLD
-
-			for _, e in ipairs(sorted) do
-				if not filter.subFilter or matchesFilter(e.value, filter.subFilter) then
-					local newTotal = total + e.value
-
-					if newTotal <= filter.value then
-						table.insert(queue, e)
-						total = newTotal
-					elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
-						table.insert(queue, e)
-						total = newTotal
-						break
-					end
-				end
-			end
-		else
-			for _, e in ipairs(sorted) do
-				if matchesFilter(e.value, filter) then
-					table.insert(queue, e)
-					total += e.value
-				end
-			end
-		end
-	end
-
-	rebuildQueue()
-
-	if #queue == 0 then
-		dropValStatusLbl.Text = "⚠️ No matching fruits"
-		return
-	end
-
-	if filter.type == "target" then
-		local available = 0
-
-		for _, e in ipairs(backpackFruits) do
-			if not e.favorite and (not filter.subFilter or matchesFilter(e.value, filter.subFilter)) then
-				available += e.value
-			end
-		end
-
-		if total < filter.value then
-			if available < filter.value then
-				dropValStatusLbl.Text =
-					string.format("⚠️ Only %s available (need %dM)", formatVal(available), filter.value)
-			else
-				dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s", formatVal(total))
-			end
-			return
-		end
-	end
-
 	dropValBtn.Text = "⛔ Cancel"
 	dropValBtn.BackgroundColor3 = C.dangerDim
 	dropValBtn.TextColor3 = C.danger
@@ -844,6 +766,49 @@ dropValBtn.MouseButton1Click:Connect(function()
 		local dropped = 0
 		local batchCount = 0
 		local BATCH_SIZE = 10
+		local reps = filter.repetitions or 1
+		local queue = {}
+		local total = 0
+
+		local function rebuildQueue()
+			table.clear(queue)
+			total = 0
+			local sorted = {}
+
+			for _, e in ipairs(backpackFruits) do
+				if not e.favorite then
+					table.insert(sorted, e)
+				end
+			end
+
+			table.sort(sorted, function(a, b)
+				return a.value > b.value
+			end)
+
+			if filter.type == "target" then
+				local ALLOWED_THRESHOLD = filter.threshold or DEFAULT_ALLOWED_THRESHOLD
+				for _, e in ipairs(sorted) do
+					if not filter.subFilter or matchesFilter(e.value, filter.subFilter) then
+						local newTotal = total + e.value
+						if newTotal <= filter.value then
+							table.insert(queue, e)
+							total = newTotal
+						elseif newTotal <= filter.value + ALLOWED_THRESHOLD then
+							table.insert(queue, e)
+							total = newTotal
+							break
+						end
+					end
+				end
+			else
+				for _, e in ipairs(sorted) do
+					if matchesFilter(e.value, filter) then
+						table.insert(queue, e)
+						total += e.value
+					end
+				end
+			end
+		end
 
 		local function removeFromList(id)
 			for i, entry in ipairs(backpackFruits) do
@@ -857,106 +822,126 @@ dropValBtn.MouseButton1Click:Connect(function()
 
 		local function promoteFruit(id)
 			Networking.Backpack.PromoteFruit:Fire(id)
-
 			local startT = tick()
-
 			while tick() - startT < 3 do
 				task.wait(0.05)
-
 				if bp then
 					for _, item in ipairs(bp:GetChildren()) do
-						if
-							item:IsA("Tool")
-							and item:GetAttribute("Id") == id
-							and not item:GetAttribute("FruitProxy")
-						then
+						if item:IsA("Tool") and item:GetAttribute("Id") == id and not item:GetAttribute("FruitProxy") then
 							return item
 						end
 					end
 				end
 			end
-
 			return nil
 		end
 
-		local function dropEntry(entry)
+		local function dropEntry(entry, currentRep)
 			if filter.type == "target" then
-				dropValStatusLbl.Text = string.format("Dropping %d/%d · %s", dropped + 1, #queue, formatVal(total))
+				dropValStatusLbl.Text = string.format("Acc %d: Dropping %d/%d · %s", currentRep, dropped + 1, #queue, formatVal(total))
 			else
-				dropValStatusLbl.Text = string.format("Dropping %d · %s", dropped + 1, formatVal(total))
+				dropValStatusLbl.Text = string.format("Acc %d: Dropping %d · %s", currentRep, dropped + 1, formatVal(total))
 			end
 
 			local tool = promoteFruit(entry.id)
-
 			if not tool then
 				task.wait(0.3)
 				return
 			end
 
 			local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
-			if hum then
-				hum:EquipTool(tool)
-			end
-
+			if hum then hum:EquipTool(tool) end
 			task.wait(0.5)
 
 			Networking.DroppedItem.RequestDrop:Fire("HarvestedFruits", entry.id)
-
 			dropped += 1
 			batchCount += 1
-
 			removeFromList(entry.id)
-
 			task.wait(0.3)
 
 			if batchCount >= BATCH_SIZE then
-				dropValStatusLbl.Text = "Waiting for pickup..."
-
+				dropValStatusLbl.Text = "Waiting for partial pickup..."
 				local waitStart = tick()
-
 				while droppingByVal and tick() - waitStart < 60 do
 					local di = Workspace:FindFirstChild("DroppedItems")
-
-					if di and #di:GetChildren() == 0 then
-						break
-					end
-
+					if di and #di:GetChildren() == 0 then break end
 					task.wait(1)
 				end
-
 				batchCount = 0
 			end
 		end
 
-		if filter.type == "target" then
-			-- Original behaviour
-			for _, entry in ipairs(queue) do
-				if not droppingByVal then
-					break
-				end
+		-- Loop through the requested number of accounts
+		for currentRep = 1, reps do
+			if not droppingByVal then break end
 
-				dropEntry(entry)
+			rebuildQueue()
+
+			if #queue == 0 then
+				dropValStatusLbl.Text = "⚠️ No matching fruits left"
+				task.wait(2)
+				break
 			end
-		else
-			-- Filter mode
-			while droppingByVal do
-				rebuildQueue()
 
-				if #queue == 0 then
-					break
+			if filter.type == "target" then
+				local available = 0
+				for _, e in ipairs(backpackFruits) do
+					if not e.favorite and (not filter.subFilter or matchesFilter(e.value, filter.subFilter)) then
+						available += e.value
+					end
 				end
 
-				dropEntry(queue[1])
+				if total < filter.value then
+					if available < filter.value then
+						dropValStatusLbl.Text = string.format("⚠️ Only %s left (need %dM) for Acc %d", formatVal(available), filter.value, currentRep)
+					else
+						dropValStatusLbl.Text = string.format("⚠️ Closest combination: %s for Acc %d", formatVal(total), currentRep)
+					end
+					task.wait(2)
+					break -- Stops completely if it can't fulfill the exact criteria for this account
+				end
+			end
+
+			dropped = 0 -- Reset dropped count per account for UI tracking
+
+			if filter.type == "target" then
+				for _, entry in ipairs(queue) do
+					if not droppingByVal then break end
+					dropEntry(entry, currentRep)
+				end
+			else
+				while droppingByVal do
+					rebuildQueue()
+					if #queue == 0 then break end
+					dropEntry(queue[1], currentRep)
+				end
+			end
+
+			if not droppingByVal then break end
+
+			-- Wait for the current account to pick up all remaining fruits from this batch
+			dropValStatusLbl.Text = string.format("Waiting for Acc %d to clear floor...", currentRep)
+			local waitStart = tick()
+			while droppingByVal and tick() - waitStart < 300 do -- 5 min timeout safety net
+				local di = Workspace:FindFirstChild("DroppedItems")
+				if di and #di:GetChildren() == 0 then
+					break
+				end
+				task.wait(1)
+			end
+
+			-- 2 Second sleep buffer before moving to the next account
+			if currentRep < reps and droppingByVal then
+				dropValStatusLbl.Text = string.format("Acc %d done. 2s sleep...", currentRep)
+				task.wait(2)
 			end
 		end
 
 		droppingByVal = false
-
 		dropValBtn.Text = "🎯 Drop by Value"
 		dropValBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 90)
 		dropValBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
-
-		dropValStatusLbl.Text = string.format("✓ Dropped %d fruits", dropped)
+		dropValStatusLbl.Text = "✓ Drop sequence finished"
 	end)
 end)
 
