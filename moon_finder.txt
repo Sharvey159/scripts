@@ -1,8 +1,8 @@
 --[[
 =============================================================================
-Script Version: v63.1
-Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing (Optimized Render)
-Architecture: Refactored Producer-Consumer Shared Queue Engine
+Script Version: v64.0
+Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
+Architecture: True Producer-Consumer FIFO Shared Queue Engine
 =============================================================================
 ]]
 
@@ -15,6 +15,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
 
 local request = request or http_request or (syn and syn.request)
 assert(request, "HTTP requests are not supported by this executor.")
@@ -64,18 +65,17 @@ local totalHarvested, totalShoveled, totalCycles = 0, 0, 0
 local keptFruitTimestamps, cycleHistory = {}, {}
 local cycleStartTime = os.time()
 
--- New Advanced Shared Queue Architecture
+-- Refactored True FIFO Queue Engine (O(1) Execution)
 local function createQueue()
     return {
         items = {}, first = 1, last = 0, size = 0,
-        counts = {}, -- Tracks counts of specific ActionTypes for fast UI/Logic queries
+        inQueue = {}, -- Prevents duplicate entries with O(1) lookups
         push = function(self, item) 
+            if not item or not item.FruitId or self.inQueue[item.FruitId] then return end
             self.last += 1
             self.items[self.last] = item 
             self.size += 1
-            if item.ActionType then
-                self.counts[item.ActionType] = (self.counts[item.ActionType] or 0) + 1
-            end
+            self.inQueue[item.FruitId] = true
         end,
         pop = function(self)
             if self.size == 0 then return nil end
@@ -86,8 +86,8 @@ local function createQueue()
             self.items[self.first] = nil
             self.size -= 1
             
-            if val.ActionType then
-                self.counts[val.ActionType] = math.max(0, (self.counts[val.ActionType] or 0) - 1)
+            if val and val.FruitId then
+                self.inQueue[val.FruitId] = nil
             end
             
             while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
@@ -97,28 +97,7 @@ local function createQueue()
             end
             return val
         end,
-        -- Atomic specific-action consumer extraction (Thread-Safe Competing Consumers)
-        popFor = function(self, actionType)
-            if self.size == 0 or (self.counts[actionType] or 0) == 0 then return nil end
-            for i = self.first, self.last do
-                local item = self.items[i]
-                if item and item.ActionType == actionType then
-                    self.items[i] = nil
-                    self.size -= 1
-                    self.counts[actionType] = math.max(0, self.counts[actionType] - 1)
-                    
-                    -- If we claimed the head element, collapse the gap efficiently
-                    if i == self.first then
-                        while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
-                        if self.first > self.last then self.first = 1; self.last = 0 end
-                    end
-                    return item
-                end
-            end
-            return nil
-        end,
-        count = function(self) return self.size end,
-        countFor = function(self, actionType) return self.counts[actionType] or 0 end
+        count = function(self) return self.size end
     }
 end
        
@@ -221,8 +200,7 @@ local function getCurrentFarmState()
     if not isAutoFarming then return "Idle (Paused)" end
     if isMaintaining then return "Fixing Sprinklers & Watering..." end
     if fruitProcessingQueue:count() > 0 then return string.format("Processing Fruits (%d)", fruitProcessingQueue:count()) end
-    if sharedActionQueue:countFor("Harvest") > 0 then return "Harvesting Crops..." end
-    if sharedActionQueue:countFor("Shovel") > 0 then return "Shoveling Plot..." end
+    if sharedActionQueue:count() > 0 then return "Clearing Trash Fruits..." end
     return "Running in background..."
 end
 
@@ -259,7 +237,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
             buckets[lower].total += 1
             
             -- Only count recent additions if it wasn't a baseline scan
-            if not f.IsBaseline and (now - f.Timestamp <= 1800) then -- 30 mins
+            if not f.IsBaseline and (now - f.Timestamp <= 1800) then 
                 buckets[lower].recent += 1
             end
         end
@@ -301,7 +279,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
 
         local payload = {
             embeds = {{
-                title = "⚡ Live Session Dashboard (v63.1)",
+                title = "⚡ Live Session Dashboard (v64.0)",
                 description = embedDescription,
                 color = 3447003,
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -350,10 +328,9 @@ local function placeSprinklerAt(position, sprinklerName, plotId)
     return true
 end
 
--- Persistent slot caching tables for self-healing logic (Decagon/10-spot system)
-local lockedSprinklerSlots = {}      -- Locks in the successful spot permanently (1 to 10)
-local searchingSprinklerSlots = {}   -- Tracks which spot is currently being scanned
-local placementPending = {}          -- Tracks if we are waiting for a placement verification
+local lockedSprinklerSlots = {}      
+local searchingSprinklerSlots = {}   
+local placementPending = {}          
 
 local function runMaintenanceCycle()
     local sprinklersFolder = myPlot:FindFirstChild("Sprinklers")
@@ -363,14 +340,11 @@ local function runMaintenanceCycle()
     
     local centerPosition = Vector3.new(plantPos.X, getPlayerGroundHeight(), plantPos.Z)
 
-    -- Determine currently active sprinklers and lock in their successful slots
     local activeSprinklers = {}
     for _, s in ipairs(sprinklersFolder:GetChildren()) do
         local sName = s:GetAttribute("SprinklerName") or s.Name
         if sName then 
             activeSprinklers[sName] = true 
-            
-            -- If it was pending placement and is now active, lock the slot permanently
             if placementPending[sName] and searchingSprinklerSlots[sName] then
                 lockedSprinklerSlots[sName] = searchingSprinklerSlots[sName]
                 placementPending[sName] = false
@@ -390,43 +364,32 @@ local function runMaintenanceCycle()
         end
     end
 
-    -- Attempt placements independently without halting the script cycle
     for _, missingType in ipairs(missingSprinklers) do
         local fixedIndex = (missingType == SUPER_SPRINKLER_NAME) and 1 or (table.find(SPRINKLER_TYPES, missingType) or 1)
         
         if not lockedSprinklerSlots[missingType] then
-            -- Sprinkler hasn't found a permanent home yet. Scan for an open spot.
             if placementPending[missingType] then
-                -- Tried last cycle and failed. Move to the next spot (scanning up to 10).
                 searchingSprinklerSlots[missingType] = (searchingSprinklerSlots[missingType] or fixedIndex) + 1
                 if searchingSprinklerSlots[missingType] > 10 then
-                    searchingSprinklerSlots[missingType] = 1 -- Wrap around back to spot 1
+                    searchingSprinklerSlots[missingType] = 1 
                 end
             else
-                -- First time trying to place this specific sprinkler type
                 searchingSprinklerSlots[missingType] = searchingSprinklerSlots[missingType] or fixedIndex
             end
             placementPending[missingType] = true
         else
-            -- Sprinkler HAS a permanent home but went missing. Do NOT recache or scan.
-            -- Keep retrying the permanently locked slot.
             placementPending[missingType] = true
         end
         
         local slotToUse = lockedSprinklerSlots[missingType] or searchingSprinklerSlots[missingType]
-        
-        -- Decagon shape mathematics (10 spots instead of 8)
         local angle = (slotToUse - 1) * (2 * math.pi / 10)
         local radius = DEFAULT_RADIUS 
         
         local targetPos = centerPosition + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-        
         placeSprinklerAt(targetPos, missingType, myPlotId)
-        
         task.wait(DEFAULT_DELAY)
     end
 
-    -- Proceed to use the Watering Can independently of whether ALL sprinklers exist
     local waterTool = equipTool(WATERING_CAN_NAME)
     if waterTool then
         pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
@@ -543,20 +506,14 @@ local function processFruit(fruit, plant, isBaseline)
         IsBaseline = isBaseline
     }
     
-    -- Producer Segment: Push directly to sharedActionQueue with the desired task type
-    if weight < 90 then 
-        fruitData.ActionType = "Harvest"
-        sharedActionQueue:push(fruitData)
-    elseif weight < 100 then 
-        fruitData.ActionType = "Shovel"
+    -- FIFO Producer: Push any trash fruit (< 100kg) to the sharedAction queue exactly once.
+    if weight < 100 then 
         sharedActionQueue:push(fruitData)
     else
         if not keptFruitCache[id] then
             keptFruitCache[id] = true
             keptCount += 1
             table.insert(keptFruitList, fruitData)
-            
-            -- Only broadcast to queues and timing metrics if it was genuinely farmed
             if not isBaseline then
                 table.insert(keptFruitTimestamps, os.time())
                 webhookQueue:push(fruitData)
@@ -571,12 +528,10 @@ local function setupPlant(plant)
     local fruitsFolder = plant:WaitForChild("Fruits", 5)
     if not fruitsFolder then return end
     
-    -- Baseline Scan: Existing fruits bypass "recent gains" tracking
     for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
         fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = true }) 
     end
     
-    -- Newly Spawning Fruits
     table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) 
         fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false }) 
     end))
@@ -606,24 +561,149 @@ local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
 local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 
 -- ============================================================================
--- CONSUMER THREADS
+-- MINIMAL UI & ANIMATION CONTROLLER
+-- ============================================================================
+local screenGui = Instance.new("ScreenGui");
+screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
+local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 255); frame.Position = UDim2.fromScale(0.02, 0.25);
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
+titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v64.0"; title.TextSize = 14;
+title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
+local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
+minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
+minimize.TextColor3 = Color3.new(1, 1, 1); minimize.TextSize = 18; minimize.Parent = titleBar; Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
+local close = Instance.new("TextButton");
+close.Size = UDim2.fromOffset(25, 25); close.Position = UDim2.new(1, -28, 0, 2); close.BackgroundColor3 = Color3.fromRGB(170, 50, 50); close.Text = "X";
+close.Font = Enum.Font.GothamBold; close.TextColor3 = Color3.new(1, 1, 1); close.TextSize = 14; close.Parent = titleBar;
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
+
+local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30);
+content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
+
+local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 30);
+autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold;
+autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
+Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
+
+local optimizeBtn = Instance.new("TextButton");
+optimizeBtn.Size = UDim2.new(1, -20, 0, 30);
+optimizeBtn.Position = UDim2.new(0, 10, 0, 45); optimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170);
+optimizeBtn.Text = "Optimize FPS"; optimizeBtn.Font = Enum.Font.GothamBold;
+optimizeBtn.TextSize = 14; optimizeBtn.TextColor3 = Color3.new(1, 1, 1); optimizeBtn.Parent = content;
+Instance.new("UICorner", optimizeBtn).CornerRadius = UDim.new(0, 6)
+
+local function createStatusLabel(yPos)
+    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -20, 0, 20);
+    lbl.Position = UDim2.new(0, 12, 0, yPos); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220);
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = content
+    return lbl
+end
+
+local function createProgressRow(yPos, titleText)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -20, 0, 20)
+    container.Position = UDim2.new(0, 12, 0, yPos)
+    container.BackgroundTransparency = 1
+    container.Parent = content
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0, 60, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = titleText
+    lbl.Parent = container
+
+    local barBg = Instance.new("Frame")
+    barBg.Size = UDim2.new(1, -65, 0, 14)
+    barBg.Position = UDim2.new(0, 65, 0.5, -7)
+    barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    barBg.Parent = container
+    Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 4)
+
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    barFill.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+    barFill.Parent = barBg
+    Instance.new("UICorner", barFill).CornerRadius = UDim.new(0, 4)
+
+    return barFill
+end
+
+local stateLbl = createStatusLabel(85)
+local trashLbl = createStatusLabel(110)
+local harvestBarFill = createProgressRow(135, "Harvest:")
+local shovelBarFill = createProgressRow(160, "Shovel:")
+local keptLbl = createStatusLabel(185)
+
+frame.Size = UDim2.fromOffset(220, 280) -- Slightly taller for new rows
+
+task.spawn(function()
+    while isScriptRunning do
+        stateLbl.Text = "Status: " .. getCurrentFarmState()
+        trashLbl.Text = "Current Trash Fruits: " .. sharedActionQueue:count()
+        keptLbl.Text = "Kept Fruits: " .. keptCount
+        task.wait(0.3) 
+    end
+end)
+
+autoToggleBtn.MouseButton1Click:Connect(function()
+    isAutoFarming = not isAutoFarming
+    autoToggleBtn.Text = isAutoFarming and "Auto-Farm: ON" or "Auto-Farm: OFF"
+    autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
+end)
+
+optimizeBtn.MouseButton1Click:Connect(function()
+    runGlobalOptimizationSweep()
+end)
+
+local expandedSize = frame.Size;
+local minimized = false
+minimize.MouseButton1Click:Connect(function()
+    minimized = not minimized; content.Visible = not minimized
+    frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
+    minimize.Text = minimized and "+" or "-"
+end)
+
+close.MouseButton1Click:Connect(function()
+    isAutoFarming = false; isScriptRunning = false 
+    plantAddedConn:Disconnect(); plantRemovedConn:Disconnect()
+    for plant in pairs(plantConnections) do cleanupPlant(plant) end
+    screenGui:Destroy()
+end)
+
+
+-- ============================================================================
+-- CONSUMER THREADS (COMPETING CONSUMER ARCHITECTURE)
 -- ============================================================================
 
--- Worker 1: Harvest Engine (Competing Consumer)
+-- Worker 1: Harvest Engine
 task.spawn(function()
     while isScriptRunning do
         if (isAutoFarming or isEventActive) and not isMaintaining then
-            local data = sharedActionQueue:popFor("Harvest")
+            local data = sharedActionQueue:pop() -- Competes for the next item
             if data then
                 if data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
                     pendingVerification[data.FruitId] = true
+                    
+                    harvestBarFill.Size = UDim2.new(0, 0, 1, 0)
+                    TweenService:Create(harvestBarFill, TweenInfo.new(HARVEST_INTERVAL, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)}):Play()
+                    
                     pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
+                    
                     task.spawn(function()
                         task.wait(VERIFICATION_DELAY)
                         if isScriptRunning then
                             pendingVerification[data.FruitId] = nil
                             if data.Instance and data.Instance.Parent then 
-                                sharedActionQueue:push(data) 
+                                sharedActionQueue:push(data) -- Reinserts at the end of queue on failure
                             else 
                                 totalHarvested += 1 
                             end
@@ -640,23 +720,27 @@ task.spawn(function()
     end
 end)
 
--- Worker 2: Shovel Engine (Competing Consumer)
+-- Worker 2: Shovel Engine
 task.spawn(function()
     while isScriptRunning do
         if (isAutoFarming or isEventActive) and not isMaintaining then
-            local data = sharedActionQueue:popFor("Shovel")
+            local data = sharedActionQueue:pop() -- Competes for the next item
             if data then
                 if data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
                     pendingVerification[data.FruitId] = true
                     local tool = getShovelTool()
                     if tool then
+                        shovelBarFill.Size = UDim2.new(0, 0, 1, 0)
+                        TweenService:Create(shovelBarFill, TweenInfo.new(SHOVEL_INTERVAL, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)}):Play()
+                        
                         pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, tool:GetAttribute("Shovel"), tool) end)
+                        
                         task.spawn(function()
                             task.wait(VERIFICATION_DELAY)
                             if isScriptRunning then
                                 pendingVerification[data.FruitId] = nil
                                 if data.Instance and data.Instance.Parent then 
-                                    sharedActionQueue:push(data) 
+                                    sharedActionQueue:push(data) -- Reinserts at the end of queue on failure
                                 else 
                                     totalShoveled += 1 
                                 end
@@ -703,7 +787,6 @@ task.spawn(function()
     while isScriptRunning do
         if isEventActive then task.wait(1)
         elseif isAutoFarming then
-            -- Consolidate sharedActionQueue check
             local totalTasks = sharedActionQueue:count() + fruitProcessingQueue:count()
             if totalTasks > 0 then
                 if not wasProcessing then cycleStartTime = os.time() end
@@ -738,86 +821,6 @@ task.spawn(function()
             task.wait(fruitProcessingQueue:count() > 0 and 0 or 0.1)
         else task.wait(0.1) end
     end
-end)
-
--- ============================================================================
--- MINIMAL UI 
--- ============================================================================
-local screenGui = Instance.new("ScreenGui");
-screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
-local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 255); frame.Position = UDim2.fromScale(0.02, 0.25);
-frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
-titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
-
-local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v63.1"; title.TextSize = 14;
-title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
-local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
-minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
-minimize.TextColor3 = Color3.new(1, 1, 1); minimize.TextSize = 18; minimize.Parent = titleBar; Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
-local close = Instance.new("TextButton");
-close.Size = UDim2.fromOffset(25, 25); close.Position = UDim2.new(1, -28, 0, 2); close.BackgroundColor3 = Color3.fromRGB(170, 50, 50); close.Text = "X";
-close.Font = Enum.Font.GothamBold; close.TextColor3 = Color3.new(1, 1, 1); close.TextSize = 14; close.Parent = titleBar;
-Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
-
-local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30);
-content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
-
-local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 30);
-autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold;
-autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
-Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
-
-local optimizeBtn = Instance.new("TextButton");
-optimizeBtn.Size = UDim2.new(1, -20, 0, 30);
-optimizeBtn.Position = UDim2.new(0, 10, 0, 45); optimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170);
-optimizeBtn.Text = "Optimize FPS"; optimizeBtn.Font = Enum.Font.GothamBold;
-optimizeBtn.TextSize = 14; optimizeBtn.TextColor3 = Color3.new(1, 1, 1); optimizeBtn.Parent = content;
-Instance.new("UICorner", optimizeBtn).CornerRadius = UDim.new(0, 6)
-
-local function createStatusLabel(yPos)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -20, 0, 20);
-    lbl.Position = UDim2.new(0, 12, 0, yPos); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220);
-    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = content
-    return lbl
-end
-local stateLbl, harvestLbl, shovelLbl, keptLbl = createStatusLabel(85), createStatusLabel(110), createStatusLabel(135), createStatusLabel(160)
-
-task.spawn(function()
-    while isScriptRunning do
-        stateLbl.Text = "Status: " .. getCurrentFarmState()
-        harvestLbl.Text = "🎰 Harvest Queue: " .. sharedActionQueue:countFor("Harvest")
-        shovelLbl.Text = "🔧 Shovel Queue: " .. sharedActionQueue:countFor("Shovel")
-        keptLbl.Text = "💎 Kept Plant: " .. keptCount
-        task.wait(0.3) 
-    end
-end)
-
-autoToggleBtn.MouseButton1Click:Connect(function()
-    isAutoFarming = not isAutoFarming
-    autoToggleBtn.Text = isAutoFarming and "Auto-Farm: ON" or "Auto-Farm: OFF"
-    autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
-end)
-
-optimizeBtn.MouseButton1Click:Connect(function()
-    runGlobalOptimizationSweep()
-end)
-
-local expandedSize = frame.Size;
-local minimized = false
-minimize.MouseButton1Click:Connect(function()
-    minimized = not minimized; content.Visible = not minimized
-    frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
-    minimize.Text = minimized and "+" or "-"
-end)
-
-close.MouseButton1Click:Connect(function()
-    isAutoFarming = false; isScriptRunning = false 
-    plantAddedConn:Disconnect(); plantRemovedConn:Disconnect()
-    for plant in pairs(plantConnections) do cleanupPlant(plant) end
-    screenGui:Destroy()
 end)
 
 -- ============================================================================
