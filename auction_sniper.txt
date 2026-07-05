@@ -1,1 +1,306 @@
 
+-- ========================================================================
+-- AUCTION SNIPER v2.1
+-- Configurable, Multi-Item, Debounce-Aware, Optimized Global Loop
+-- ========================================================================
+
+local CONFIG = {
+	Debug = true, -- Set to true to enable detailed logging
+	Items = {
+		{
+			Name = "Super Watering Can (x3)",
+			TimerThreshold = 21,
+			PriceThreshold = nil -- Will only use TimerThreshold
+		},
+		{
+			Name = "Legendary Sprinkler",
+			TimerThreshold = 15,
+			PriceThreshold = 2500000 -- Will snipe if time <= 15 OR price <= 2.5m
+		},
+		{
+			Name = "Diamond Seed",
+			TimerThreshold = nil,
+			PriceThreshold = 500000 -- Will only snipe based on price
+		}
+	}
+}
+
+-- ========================================================================
+-- SERVICES & GLOBALS
+-- ========================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
+
+local AuctioneerFlags = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Flags"):WaitForChild("AuctioneerFlags"))
+
+local monitoredLots = {} -- Dictionary containing active lots: { [LotFrame] = lotData }
+local lastPurchaseTime = 0
+local globalHeartbeat = nil
+
+-- ========================================================================
+-- HELPER FUNCTIONS
+-- ========================================================================
+
+local function debugLog(message)
+	if CONFIG.Debug then
+		print("[AuctionSniper] " .. message)
+	end
+end
+
+-- Safely fetch the dynamic game debounce to avoid detection/errors
+local function getDebounce()
+	local success, result = pcall(function()
+		return AuctioneerFlags.PurchaseDebounceSeconds:Get()
+	end)
+	return (success and type(result) == "number") and result or 0.5
+end
+
+-- Normalize string for robust matching (lowercase, trim, collapse spaces)
+local function normalizeString(str)
+	if not str then return "" end
+	str = string.lower(str)
+	str = string.gsub(str, "^%s*(.-)%s*$", "%1") -- trim leading/trailing
+	str = string.gsub(str, "%s+", " ")          -- collapse multiple spaces
+	return str
+end
+
+-- Convert string timers into comparable numbers
+local function parseTimerToSeconds(timeStr)
+	if not timeStr or timeStr == "--" then return 0 end
+	
+	local hrs, mins2 = string.match(timeStr, "(%d+)h (%d+)m")
+	if hrs and mins2 then return (tonumber(hrs) * 3600) + (tonumber(mins2) * 60) end
+	
+	local mins, secs = string.match(timeStr, "(%d+)m (%d+)s")
+	if mins and secs then return (tonumber(mins) * 60) + tonumber(secs) end
+	
+	local secsOnly = string.match(timeStr, "(%d+)s")
+	if secsOnly then return tonumber(secsOnly) end
+	
+	return 0 
+end
+
+-- Extract time prioritizing internal attributes over UI text
+local function getTimeRemaining(lotFrame, mainFrame, timerLabel)
+	-- Check for direct remaining time attributes
+	local timeRemainingAttr = lotFrame:GetAttribute("TimeRemaining") or mainFrame:GetAttribute("TimeRemaining")
+	if type(timeRemainingAttr) == "number" then
+		return timeRemainingAttr
+	end
+
+	-- Check for expiration timestamp attributes
+	local expiresAt = lotFrame:GetAttribute("ExpiresAt") or lotFrame:GetAttribute("EndTime") 
+		or mainFrame:GetAttribute("ExpiresAt") or mainFrame:GetAttribute("EndTime")
+	if type(expiresAt) == "number" then
+		return math.max(0, expiresAt - os.time())
+	end
+	
+	-- Fallback to GUI parsing
+	return parseTimerToSeconds(timerLabel.Text)
+end
+
+-- Parse abbreviations like "2.5M", "850K", and comma separated values
+local function parsePriceText(text)
+	if type(text) ~= "string" then return nil end
+	text = text:gsub(",", "") -- Strip commas
+	
+	local valStr, suffix = string.match(string.lower(text), "([%d%.]+)([kmb]?)")
+	if not valStr then return nil end
+	
+	local val = tonumber(valStr)
+	if not val then return nil end
+	
+	if suffix == "k" then val = val * 1000
+	elseif suffix == "m" then val = val * 1000000
+	elseif suffix == "b" then val = val * 1000000000
+	end
+	
+	return val
+end
+
+-- Extract price prioritizing internal attributes over UI text for accuracy
+local function getPrice(lotFrame, mainFrame)
+	-- Check common hidden attributes first
+	local attrPrice = lotFrame:GetAttribute("Price") or lotFrame:GetAttribute("CurrentPrice") or lotFrame:GetAttribute("CurrentBid")
+	if not attrPrice then
+		attrPrice = mainFrame:GetAttribute("Price") or mainFrame:GetAttribute("CurrentPrice") or mainFrame:GetAttribute("CurrentBid")
+	end
+	
+	if type(attrPrice) == "number" then 
+		return attrPrice 
+	end
+
+	-- Fallback to UI text if no attributes exist, supporting abbreviations (2.5M, etc.)
+	local priceLabel = mainFrame:FindFirstChild("Price") or mainFrame:FindFirstChild("CurrentPrice")
+	if priceLabel and priceLabel:IsA("TextLabel") then
+		return parsePriceText(priceLabel.Text)
+	end
+	
+	return nil
+end
+
+-- Find a matching config using normalized matching
+local function getMatchedConfig(fullName)
+	local normalizedFullName = normalizeString(fullName)
+	for _, config in ipairs(CONFIG.Items) do
+		local normalizedConfigName = normalizeString(config.Name)
+		-- Use plain search (true) to prevent parenthesis from breaking pattern matching
+		if string.find(normalizedFullName, normalizedConfigName, 1, true) then
+			return config
+		end
+	end
+	return nil
+end
+
+-- Clean up a lot when it disappears or is sold
+local function cleanupLot(lotFrame, reason)
+	if monitoredLots[lotFrame] then
+		monitoredLots[lotFrame] = nil
+		debugLog("Stopped monitoring lot. Reason: " .. (reason or "Removed/Sold"))
+	end
+end
+
+-- Execute the purchase utilizing the exact connections hooked to the button
+local function attemptPurchase(buyButton)
+	if getconnections then
+		for _, conn in ipairs(getconnections(buyButton.Activated)) do
+			conn:Function() 
+		end
+	end
+end
+
+-- ========================================================================
+-- CORE LOGIC
+-- ========================================================================
+
+-- Single Global Monitor Loop
+local function startGlobalMonitor()
+	if globalHeartbeat then return end
+	globalHeartbeat = RunService.Heartbeat:Connect(function()
+		for lotFrame, data in pairs(monitoredLots) do
+			-- 1. Validation check
+			if not lotFrame:IsDescendantOf(game) or not lotFrame.Parent then
+				cleanupLot(lotFrame, "Despawned from UI")
+				continue
+			end
+
+			local timeRemaining = getTimeRemaining(lotFrame, data.MainFrame, data.TimerLabel)
+			
+			-- Only drop via text if the internal computation wasn't the exact source driving an expired value, 
+			-- but we use TimerLabel "--" as a reliable loading/invalid state check fallback.
+			if timeRemaining <= 0 and data.TimerLabel.Text ~= "--" then
+				cleanupLot(lotFrame, "Timer expired / Sold out")
+				continue
+			end
+
+			-- 2. State reading
+			local currentPrice = getPrice(lotFrame, data.MainFrame)
+			
+			local timerMet = false
+			if data.Config.TimerThreshold and timeRemaining > 0 and timeRemaining <= data.Config.TimerThreshold then
+				timerMet = true
+			end
+			
+			local priceMet = false
+			if data.Config.PriceThreshold and currentPrice and currentPrice <= data.Config.PriceThreshold then
+				priceMet = true
+			end
+
+			-- 3. Action execution (OR condition)
+			if timerMet or priceMet then
+				local now = os.clock()
+				local debounce = getDebounce()
+				
+				-- Strict debounce adherence
+				if now - lastPurchaseTime >= debounce then
+					lastPurchaseTime = now
+					
+					local triggerReason = timerMet and ("Timer ("..timeRemaining.."s)") or ("Price ("..tostring(currentPrice)..")")
+					debugLog(string.format("[!] SNIPING %s! Triggered by: %s. Debounce: %ss", data.Config.Name, triggerReason, tostring(debounce)))
+					
+					attemptPurchase(data.BuyButton)
+				end
+			end
+		end
+	end)
+end
+
+-- Evaluate newly detected lots asynchronously to allow UI to render
+local function processNewLot(lotFrame)
+	if not lotFrame:IsA("Frame") or string.sub(lotFrame.Name, 1, 4) ~= "Lot_" then return end
+	if monitoredLots[lotFrame] then return end -- Prevent duplicates
+	
+	-- Yield briefly to ensure GUI sub-elements have populated
+	local innerFrame = lotFrame:WaitForChild("Frame", 3)
+	if not innerFrame then return end
+	local mainFrame = innerFrame:WaitForChild("Main_Frame", 3)
+	if not mainFrame then return end
+	
+	-- Build complete item name
+	local itemName = mainFrame:FindFirstChild("ItemName") and mainFrame.ItemName.Text or ""
+	local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
+	local subtitle = imageDisplay:GetAttribute("ItemToolTipSubtitle") or ""
+	local fullName = itemName .. " " .. subtitle
+	
+	local matchedConfig = getMatchedConfig(fullName)
+	if matchedConfig then
+		local buyButton = mainFrame:FindFirstChild("BuyButton")
+		local refreshIn = mainFrame:FindFirstChild("RefreshIn")
+		local timerLabel = refreshIn and (refreshIn:FindFirstChild("Timer") or refreshIn)
+		
+		if buyButton and timerLabel then
+			monitoredLots[lotFrame] = {
+				Config = matchedConfig,
+				MainFrame = mainFrame,
+				BuyButton = buyButton,
+				TimerLabel = timerLabel
+			}
+			debugLog("Started monitoring: " .. matchedConfig.Name)
+		end
+	end
+end
+
+-- ========================================================================
+-- INITIALIZATION
+-- ========================================================================
+
+local function initScanner()
+	local playerGui = player:WaitForChild("PlayerGui", 10)
+	local auctionGui = playerGui and playerGui:WaitForChild("Auction", 10)
+	local scrollFrame = auctionGui and auctionGui:WaitForChild("Frame", 10) and auctionGui.Frame:WaitForChild("ScrollingFrame", 10)
+	
+	if not scrollFrame then
+		debugLog("Failed to locate Auction ScrollingFrame. UI might not be loaded.")
+		return
+	end
+
+	debugLog("Initialization successful. Scanning for targets...")
+
+	-- Start the global loop once
+	startGlobalMonitor()
+
+	-- 1. Scan pre-existing lots
+	for _, lotFrame in ipairs(scrollFrame:GetChildren()) do
+		task.spawn(processNewLot, lotFrame)
+	end
+
+	-- 2. Bind to dynamically added lots
+	scrollFrame.ChildAdded:Connect(function(child)
+		task.spawn(processNewLot, child)
+	end)
+	
+	-- 3. Cleanup garbage collection
+	scrollFrame.ChildRemoved:Connect(function(child)
+		cleanupLot(child, "Removed from ScrollingFrame")
+	end)
+end
+
+print("=======================================")
+print(" AUCTION SNIPER v2.1 INITIATED")
+print(" Configured Targets: " .. #CONFIG.Items)
+print("=======================================")
+
+initScanner()
