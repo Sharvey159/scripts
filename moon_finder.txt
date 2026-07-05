@@ -1,7 +1,8 @@
 --[[
 =============================================================================
-Script Version: v63.0
+Script Version: v63.1
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing (Optimized Render)
+Architecture: Refactored Producer-Consumer Shared Queue Engine
 =============================================================================
 ]]
 
@@ -63,30 +64,66 @@ local totalHarvested, totalShoveled, totalCycles = 0, 0, 0
 local keptFruitTimestamps, cycleHistory = {}, {}
 local cycleStartTime = os.time()
 
+-- New Advanced Shared Queue Architecture
 local function createQueue()
     return {
-        items = {}, first = 1, last = 0,
+        items = {}, first = 1, last = 0, size = 0,
+        counts = {}, -- Tracks counts of specific ActionTypes for fast UI/Logic queries
         push = function(self, item) 
-            self.last += 1;
+            self.last += 1
             self.items[self.last] = item 
+            self.size += 1
+            if item.ActionType then
+                self.counts[item.ActionType] = (self.counts[item.ActionType] or 0) + 1
+            end
         end,
         pop = function(self)
+            if self.size == 0 then return nil end
+            while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
             if self.first > self.last then return nil end
+            
             local val = self.items[self.first]
             self.items[self.first] = nil
-            self.first += 1
+            self.size -= 1
+            
+            if val.ActionType then
+                self.counts[val.ActionType] = math.max(0, (self.counts[val.ActionType] or 0) - 1)
+            end
+            
+            while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
             if self.first > self.last then 
-                self.first = 1;
+                self.first = 1
                 self.last = 0 
             end
             return val
         end,
-        count = function(self) return self.last - self.first + 1 end
+        -- Atomic specific-action consumer extraction (Thread-Safe Competing Consumers)
+        popFor = function(self, actionType)
+            if self.size == 0 or (self.counts[actionType] or 0) == 0 then return nil end
+            for i = self.first, self.last do
+                local item = self.items[i]
+                if item and item.ActionType == actionType then
+                    self.items[i] = nil
+                    self.size -= 1
+                    self.counts[actionType] = math.max(0, self.counts[actionType] - 1)
+                    
+                    -- If we claimed the head element, collapse the gap efficiently
+                    if i == self.first then
+                        while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
+                        if self.first > self.last then self.first = 1; self.last = 0 end
+                    end
+                    return item
+                end
+            end
+            return nil
+        end,
+        count = function(self) return self.size end,
+        countFor = function(self, actionType) return self.counts[actionType] or 0 end
     }
 end
        
 local plantConnections, keptFruitCache, keptFruitList, pendingVerification = {}, {}, {}, {}
-local fruitProcessingQueue, harvestQueue, shovelQueue, webhookQueue = createQueue(), createQueue(), createQueue(), createQueue() 
+local fruitProcessingQueue, sharedActionQueue, webhookQueue = createQueue(), createQueue(), createQueue() 
 local keptCount = 0           
 
 -- ============================================================================
@@ -120,8 +157,8 @@ local function getShovelTool()
     if tool then
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if humanoid then 
-            humanoid:EquipTool(tool);
-            cachedShovelInstance = tool; 
+            humanoid:EquipTool(tool)
+            cachedShovelInstance = tool 
             return tool 
         end
     end
@@ -159,784 +196,4 @@ local function getFirstAvailablePlant()
     if not plantsFolder then return nil end
     local plants = plantsFolder:GetChildren()
     for _, plant in ipairs(plants) do
-        if getPlantPosition(plant) then return plant end
-    end
-    return plants[1]
-end
-
-local function getPlayerGroundHeight()
-    local char = getCharacter()
-    local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-    if not root then return 0 end
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { char }
-    local result = workspace:Raycast(root.Position, Vector3.new(0, -100, 0), params)
-    return result and result.Position.Y or root.Position.Y
-end
-
--- ============================================================================
--- STATE TRACKING & DASHBOARD UPDATES
--- ============================================================================
-
-local function getCurrentFarmState()
-    if isEventActive then return "Event Cleanup Active!" end
-    if not isAutoFarming then return "Idle (Paused)" end
-    if isMaintaining then return "Fixing Sprinklers & Watering..." end
-    if fruitProcessingQueue:count() > 0 then return string.format("Processing Fruits (%d)", fruitProcessingQueue:count()) end
-    if harvestQueue:count() > 0 then return "Harvesting Crops..." end
-    if shovelQueue:count() > 0 then return "Shoveling Plot..." end
-    return "Running in background..."
-end
-
-local function updateAnalyticsDashboard(latestFruitsText)
-    task.spawn(function()
-        local now = os.time()
-        local runtime = now - sessionStart
-  
-        -- Clean 5-minute window for velocity
-        local validTimestamps = {}
-        for _, ts in ipairs(keptFruitTimestamps) do
-            if now - ts <= 300 then table.insert(validTimestamps, ts) end
-        end
-        keptFruitTimestamps = validTimestamps
-        local fruitsInFiveMins = #keptFruitTimestamps
-       
-        -- Averages
-        local avgCycle = 0
-        if #cycleHistory > 0 then
-            local sum = 0
-            for _, d in ipairs(cycleHistory) do sum += d end
-            avgCycle = sum / #cycleHistory
-        end
-       
-        local hourlyRate = runtime > 0 and (keptCount / (runtime / 3600)) or 0
-        
-        -- Generate 20kg Buckets
-        local buckets = {}
-        for _, f in ipairs(keptFruitList) do
-            local lower = math.floor(f.Weight / 20) * 20
-            if lower < 100 then lower = 100 end 
-            
-            if not buckets[lower] then buckets[lower] = { total = 0, recent = 0 } end
-            buckets[lower].total += 1
-            
-            -- Only count recent additions if it wasn't a baseline scan
-            if not f.IsBaseline and (now - f.Timestamp <= 1800) then -- 30 mins
-                buckets[lower].recent += 1
-            end
-        end
-        
-        local bucketKeys = {}
-        for k in pairs(buckets) do table.insert(bucketKeys, k) end
-        table.sort(bucketKeys)
-     
-        local bucketString = ""
-        for _, lower in ipairs(bucketKeys) do
-            local bData = buckets[lower]
-            local recentStr = bData.recent > 0 and string.format(" *(+%d in last 30m)*", bData.recent) or ""
-            bucketString = bucketString .. string.format("• **%dkg - %dkg:** %dx%s\n", lower, lower + 20, bData.total, recentStr)
-        end
-        if bucketString == "" then bucketString = "• *Awaiting high-yield fruits...*\n" end
-
-        local embedDescription = string.format(
-            "📊 **Live Farm Session Metrics**\n" ..
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-            "⏱️ **Started:** <t:%d:R>\n" ..
-            "🚜 **Status:** %s\n" ..
-            "🌍 **World:** %s (%s)\n\n" ..
-            "📈 **Performance Analytics:**\n" ..
-            "• **Total Farming Cycles:** %d\n" ..
-            "• **Avg Cycle (Last 100):** %.2fs\n" ..
-            "• **Kept Fruits (Last 5m):** %d\n" ..
-            "• **Estimated Yield:** %.2f kept/hr\n\n" ..
-            "⚖️ **Yield Buckets (>= 100kg):**\n" ..
-            "%s\n" ..
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-            "📋 **Latest Drops:**\n%s",
-            sessionStart,
-            getCurrentFarmState(),
-            Workspace:GetAttribute("ActivePhase") or "Unknown", Workspace:GetAttribute("ActiveWeather") or "None",
-            totalCycles, avgCycle, fruitsInFiveMins, hourlyRate,
-            bucketString,
-            (latestFruitsText and latestFruitsText ~= "") and latestFruitsText or "*Waiting for items...*"
-        )
-
-        local payload = {
-            embeds = {{
-                title = "⚡ Live Session Dashboard (v63.0)",
-                description = embedDescription,
-                color = 3447003,
-                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-            }}
-        }
-
-        if not dashboardMessageId then
-            local postUrl = WEBHOOK_URL .. (string.find(WEBHOOK_URL, "?") and "&wait=true" or "?wait=true")
-            pcall(function()
-                local response = request({ Url = postUrl, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
-                if response and response.StatusCode == 200 then
-                    local data = HttpService:JSONDecode(response.Body)
-                    if data and data.id then dashboardMessageId = data.id end
-                end
-            end)
-        else
-            pcall(function()
-                request({ Url = string.format("%s/messages/%s", WEBHOOK_URL, dashboardMessageId), Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
-            end)
-        end
-    end)
-end
-
--- ============================================================================
--- WEBHOOK HELPER & MAINTENANCE
--- ============================================================================
-local function sendWebhook(url, title, body, color, mention)
-    task.spawn(function()
-        pcall(function()
-            request({
-                Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({
-                    content = mention or "", 
-                    allowed_mentions = { parse = { "users", "roles" } },
-                    embeds = {{ title = title, description = body, color = color or 3447003, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ") }},
-                }),
-            })
-        end)
-    end)
-end
-
-local function placeSprinklerAt(position, sprinklerName, plotId)
-    local tool = equipTool(sprinklerName)
-    if not tool then return false end
-    pcall(function() Networking.Place.PlaceSprinkler:Fire(position, sprinklerName, tool, plotId) end)
-    return true
-end
-
--- Persistent slot caching tables for self-healing logic (Decagon/10-spot system)
-local lockedSprinklerSlots = {}      -- Locks in the successful spot permanently (1 to 10)
-local searchingSprinklerSlots = {}   -- Tracks which spot is currently being scanned
-local placementPending = {}          -- Tracks if we are waiting for a placement verification
-
-local function runMaintenanceCycle()
-    local sprinklersFolder = myPlot:FindFirstChild("Sprinklers")
-    local targetPlant = getFirstAvailablePlant()
-    local plantPos = targetPlant and getPlantPosition(targetPlant)
-    if not sprinklersFolder or not plantPos then return end
-    
-    local centerPosition = Vector3.new(plantPos.X, getPlayerGroundHeight(), plantPos.Z)
-
-    -- Determine currently active sprinklers and lock in their successful slots
-    local activeSprinklers = {}
-    for _, s in ipairs(sprinklersFolder:GetChildren()) do
-        local sName = s:GetAttribute("SprinklerName") or s.Name
-        if sName then 
-            activeSprinklers[sName] = true 
-            
-            -- If it was pending placement and is now active, lock the slot permanently
-            if placementPending[sName] and searchingSprinklerSlots[sName] then
-                lockedSprinklerSlots[sName] = searchingSprinklerSlots[sName]
-                placementPending[sName] = false
-            end
-        end
-    end
-
-    local char = getCharacter()
-    local ownsSuper = player.Backpack:FindFirstChild(SUPER_SPRINKLER_NAME) or (char and char:FindFirstChild(SUPER_SPRINKLER_NAME))
-
-    local missingSprinklers = {}
-    if ownsSuper then
-        if not activeSprinklers[SUPER_SPRINKLER_NAME] then table.insert(missingSprinklers, SUPER_SPRINKLER_NAME) end
-    else
-        for _, sType in ipairs(SPRINKLER_TYPES) do
-            if not activeSprinklers[sType] then table.insert(missingSprinklers, sType) end
-        end
-    end
-
-    -- Attempt placements independently without halting the script cycle
-    for _, missingType in ipairs(missingSprinklers) do
-        local fixedIndex = (missingType == SUPER_SPRINKLER_NAME) and 1 or (table.find(SPRINKLER_TYPES, missingType) or 1)
-        
-        if not lockedSprinklerSlots[missingType] then
-            -- Sprinkler hasn't found a permanent home yet. Scan for an open spot.
-            if placementPending[missingType] then
-                -- Tried last cycle and failed. Move to the next spot (scanning up to 10).
-                searchingSprinklerSlots[missingType] = (searchingSprinklerSlots[missingType] or fixedIndex) + 1
-                if searchingSprinklerSlots[missingType] > 10 then
-                    searchingSprinklerSlots[missingType] = 1 -- Wrap around back to spot 1
-                end
-            else
-                -- First time trying to place this specific sprinkler type
-                searchingSprinklerSlots[missingType] = searchingSprinklerSlots[missingType] or fixedIndex
-            end
-            placementPending[missingType] = true
-        else
-            -- Sprinkler HAS a permanent home but went missing. Do NOT recache or scan.
-            -- Keep retrying the permanently locked slot.
-            placementPending[missingType] = true
-        end
-        
-        local slotToUse = lockedSprinklerSlots[missingType] or searchingSprinklerSlots[missingType]
-        
-        -- Decagon shape mathematics (10 spots instead of 8)
-        local angle = (slotToUse - 1) * (2 * math.pi / 10)
-        local radius = DEFAULT_RADIUS 
-        
-        local targetPos = centerPosition + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-        
-        placeSprinklerAt(targetPos, missingType, myPlotId)
-        
-        task.wait(DEFAULT_DELAY)
-    end
-
-    -- Proceed to use the Watering Can independently of whether ALL sprinklers exist
-    local waterTool = equipTool(WATERING_CAN_NAME)
-    if waterTool then
-        pcall(function() Networking.WateringCan.UseWateringCan:Fire(centerPosition, WATERING_CAN_NAME, waterTool) end)
-        task.wait(1)
-        runGlobalOptimizationSweep()
-        getShovelTool() 
-    end
-end
-
--- ============================================================================
--- INDEPENDENT EVENT WATCHER
--- ============================================================================
-
-local isLeaving = false
-local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
-    if isLeaving then return end
-    isLeaving = true;
-    isScriptRunning = false 
-    local endTime = os.time() + remainingSeconds
-    sendWebhook(webhookUrl, "🚨 Avoided Event", string.format("**Event:** %s\n🚪 **Action:** Leaving Server\n📅 **Ends:** <t:%d:R>", reason, endTime), 0xE74C3C, mention)
-    task.wait(1.5) 
-    pcall(function() if player then player:Kick("Avoiding " .. reason) end end)
-    task.wait(0.5)
-    pcall(function() player:Destroy() end)
-end
-
-local isSafePhaseActive, activeWeathers = false, {}
-local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
-
-local function evaluateEventState()
-    local isAnySafeWeather = false
-    for wName, isActive in pairs(activeWeathers) do
-        if isActive and SAFE_WEATHER[wName] then isAnySafeWeather = true break end
-    end
-    
-    local currentlyActive = isSafePhaseActive or isAnySafeWeather
-    if currentlyActive and not isEventActive then
-        isEventActive = true
-    elseif not currentlyActive and isEventActive then
-        isEventActive = false
-        task.spawn(function()
-            if not isLeaving then 
-                isMaintaining = true;
-                runMaintenanceCycle(); 
-                isMaintaining = false 
-            end
-        end)
-    end
-    updateAnalyticsDashboard()
-end
-
-local function isSafeMoon(w) return w and (string.find(string.lower(w), "blood") or string.find(string.lower(w), "mega")) end
-local function isSpecialMoonToAvoid(w) return w and not isSafeMoon(w) and (string.find(string.lower(w), "gold") or string.find(string.lower(w), "rainbow")) end
-
-local lastPhase, lastWeather = nil, nil
-local function checkTimeCycle()
-    local phase, weather = Workspace:GetAttribute("ActivePhase"), Workspace:GetAttribute("ActiveWeather")
-    if not phase or not weather or (phase == lastPhase and weather == lastWeather) then return end
-    lastPhase, lastWeather = phase, weather
-
-    if phase == "Night" then
-        local specialAvoid = isSpecialMoonToAvoid(weather)
-        if specialAvoid or (CONFIG.DebugMode and not isSafeMoon(weather)) then
-            executeLeave(specialAvoid and weather or "Normal Night", 120, CONFIG.PhaseWebhook, "<@" .. CONFIG.MyUserId .. ">")
-            return
-        end
-    end
-
-    isSafePhaseActive = (phase == "Night" and isSafeMoon(weather))
-    evaluateEventState()
-
-    local title, color, mention, icon = "🌗 Phase Changed", 0xF1C40F, nil, "🌗"
-    if phase == "Day" then icon, title = "☀️", "☀️ Day Time"
-    elseif phase == "Sunset" then icon, title, color = "🌇", "🌇 Sunset", 0xE67E22
-    elseif phase == "Night" then
-        icon = "🌙"
-        if string.find(string.lower(weather), "blood") then title, color, mention = "🩸🌕 BLOOD MOON!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
-        elseif string.find(string.lower(weather), "mega") then title, color = "🔵🌕 MEGA MOON!", 0x3498DB
-        else 
-            title, color = "🌙 Night Begins", 0x2C3E50 
-        end
-    end
-    sendWebhook(CONFIG.PhaseWebhook, title, string.format("**Phase:** %s %s\n**Weather:** %s", icon, phase, weather), color, mention)
-end
-
-Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
-Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
-if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
-
--- ============================================================================
--- FRUIT PROCESSING 
--- ============================================================================
-local function removeKeptFruitState(fruitId)
-    if not fruitId or not keptFruitCache[fruitId] then return end
-    keptFruitCache[fruitId] = nil
-    keptCount -= 1
-    for i, f in ipairs(keptFruitList) do
-        if f.FruitId == fruitId then table.remove(keptFruitList, i) break end
-    end
-end
-
-local function processFruit(fruit, plant, isBaseline)
-    if not fruit then return end
-    local name, id = fruit:GetAttribute("CorePartName"), fruit:GetAttribute("FruitId")
-    local plantId = plant:GetAttribute("PlantId") or plant.Name
-    if not id or not name or not plantId then return end
-    
-    local weight = tonumber(FruitVisualizerController:CalculateFruitWeight(fruit) or (FruitVisualizerController.CalculatePlantWeight and FruitVisualizerController:CalculatePlantWeight(fruit)) or 0)
-    
-    local fruitData = {
-        PlantId = plantId, FruitId = id, Name = name,
-        Weight = weight, Mutation = fruit:GetAttribute("Mutation") or "None", Instance = fruit,
-        Timestamp = isBaseline and 0 or os.time(), 
-        IsBaseline = isBaseline
-    }
-    
-    if weight < 90 then harvestQueue:push(fruitData)
-    elseif weight < 100 then shovelQueue:push(fruitData)
-    else
-        if not keptFruitCache[id] then
-            keptFruitCache[id] = true
-            keptCount += 1
-            table.insert(keptFruitList, fruitData)
-            
-            -- Only broadcast to queues and timing metrics if it was genuinely farmed
-            if not isBaseline then
-                table.insert(keptFruitTimestamps, os.time())
-                webhookQueue:push(fruitData)
-            end
-        end
-    end
-end
-
-local function setupPlant(plant)
-    if plantConnections[plant] then return end
-    plantConnections[plant] = {}
-    local fruitsFolder = plant:WaitForChild("Fruits", 5)
-    if not fruitsFolder then return end
-    
-    -- Baseline Scan: Existing fruits bypass "recent gains" tracking
-    for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
-        fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = true }) 
-    end
-    
-    -- Newly Spawning Fruits
-    table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) 
-        fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false }) 
-    end))
-    
-    table.insert(plantConnections[plant], fruitsFolder.ChildRemoved:Connect(function(fruit) 
-        local id = fruit:GetAttribute("FruitId");
-        if id then removeKeptFruitState(id) end 
-    end))
-end
-
-local function cleanupPlant(plant)
-    if plantConnections[plant] then 
-        for _, c in ipairs(plantConnections[plant]) do c:Disconnect() end;
-        plantConnections[plant] = nil 
-    end
-    local fFolder = plant:FindFirstChild("Fruits")
-    if fFolder then 
-        for _, f in ipairs(fFolder:GetChildren()) do 
-            local id = f:GetAttribute("FruitId");
-            if id then removeKeptFruitState(id) end 
-        end 
-    end
-end
-
-for _, plant in ipairs(myPlot.Plants:GetChildren()) do setupPlant(plant) end
-local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
-local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
-
--- ============================================================================
--- CONSUMER THREADS
--- ============================================================================
-
--- Worker 1: Harvest Engine
-task.spawn(function()
-    while isScriptRunning do
-        if (isAutoFarming or isEventActive) and not isMaintaining and harvestQueue:count() > 0 then
-            local data = harvestQueue:pop()
-            if data and data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
-                pendingVerification[data.FruitId] = true
-                pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
-                task.spawn(function()
-                    task.wait(VERIFICATION_DELAY)
-                    if isScriptRunning then
-                        pendingVerification[data.FruitId] = nil
-                        if data.Instance and data.Instance.Parent then harvestQueue:push(data) else totalHarvested += 1 end
-                    end
-                end)
-                task.wait(HARVEST_INTERVAL)
-            end
-        else task.wait(0.1) end
-    end
-end)
-
--- Worker 2: Shovel Engine 
-task.spawn(function()
-    while isScriptRunning do
-        if (isAutoFarming or isEventActive) and not isMaintaining and shovelQueue:count() > 0 then
-            local data = shovelQueue:pop()
-            if data and data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
-                pendingVerification[data.FruitId] = true
-                local tool = getShovelTool()
-                if tool then
-                    pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, tool:GetAttribute("Shovel"), tool) end)
-                    task.spawn(function()
-                        task.wait(VERIFICATION_DELAY)
-                        if isScriptRunning then
-                            pendingVerification[data.FruitId] = nil
-                            if data.Instance and data.Instance.Parent then shovelQueue:push(data) else totalShoveled += 1 end
-                        end
-                    end)
-                    task.wait(SHOVEL_INTERVAL)
-                else
-                    pendingVerification[data.FruitId] = nil
-                    shovelQueue:push(data)
-                    task.wait(0.5) 
-                end
-            end
-        else task.wait(0.1) end
-    end
-end)
-
--- Worker 3: Webhook Dashboard Engine
-task.spawn(function()
-    local lastTextOutput = ""
-    while isScriptRunning do
-        if webhookQueue:count() > 0 then
-            local batchedFruits = {}
-            while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
-            if #batchedFruits > 0 then
-                for _, f in ipairs(batchedFruits) do 
-                    lastTextOutput = string.format("• %s (%.2fkg) [%s]\n", f.Name, f.Weight, f.Mutation) .. lastTextOutput 
-                end
-                if string.len(lastTextOutput) > 600 then lastTextOutput = string.sub(lastTextOutput, 1, 600) .. "\n*Truncated...*" end
-            end
-        end
-        updateAnalyticsDashboard(lastTextOutput)
-        task.wait(4)
-    end
-end)
-
--- Worker 4: Main Coordinator & Cycle Tracking
-task.spawn(function()
-    local wasProcessing = false
-    while isScriptRunning do
-        if isEventActive then task.wait(1)
-        elseif isAutoFarming then
-            local totalTasks = harvestQueue:count() + shovelQueue:count() + fruitProcessingQueue:count()
-            if totalTasks > 0 then
-                if not wasProcessing then cycleStartTime = os.time() end
-                wasProcessing = true
-            elseif wasProcessing and totalTasks == 0 then
-                wasProcessing = false
-                totalCycles += 1
-                table.insert(cycleHistory, os.time() - cycleStartTime)
-                if #cycleHistory > 100 then table.remove(cycleHistory, 1) end
-              
-                isMaintaining = true;
-                runMaintenanceCycle(); 
-                isMaintaining = false
-            end
-        end
-        task.wait(0.5)
-    end
-end)
-
--- Worker 5: Fruit Processing
-task.spawn(function()
-    while isScriptRunning do
-        if fruitProcessingQueue:count() > 0 then
-            local processed = 0
-            while fruitProcessingQueue:count() > 0 and processed < 75 do
-                local data = fruitProcessingQueue:pop()
-                if data and data.fruit and data.plant and data.fruit.Parent then 
-                    processFruit(data.fruit, data.plant, data.isBaseline) 
-                end
-                processed += 1
-            end
-            task.wait(fruitProcessingQueue:count() > 0 and 0 or 0.1)
-        else task.wait(0.1) end
-    end
-end)
-
--- ============================================================================
--- MINIMAL UI 
--- ============================================================================
-local screenGui = Instance.new("ScreenGui");
-screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
-local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 255); frame.Position = UDim2.fromScale(0.02, 0.25);
-frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
-titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
-
-local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v63"; title.TextSize = 14;
-title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
-local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
-minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
-minimize.TextColor3 = Color3.new(1, 1, 1); minimize.TextSize = 18; minimize.Parent = titleBar; Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 4)
-local close = Instance.new("TextButton");
-close.Size = UDim2.fromOffset(25, 25); close.Position = UDim2.new(1, -28, 0, 2); close.BackgroundColor3 = Color3.fromRGB(170, 50, 50); close.Text = "X";
-close.Font = Enum.Font.GothamBold; close.TextColor3 = Color3.new(1, 1, 1); close.TextSize = 14; close.Parent = titleBar;
-Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
-
-local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30);
-content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
-
-local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 30);
-autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold;
-autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
-Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
-
-local optimizeBtn = Instance.new("TextButton");
-optimizeBtn.Size = UDim2.new(1, -20, 0, 30);
-optimizeBtn.Position = UDim2.new(0, 10, 0, 45); optimizeBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170);
-optimizeBtn.Text = "Optimize FPS"; optimizeBtn.Font = Enum.Font.GothamBold;
-optimizeBtn.TextSize = 14; optimizeBtn.TextColor3 = Color3.new(1, 1, 1); optimizeBtn.Parent = content;
-Instance.new("UICorner", optimizeBtn).CornerRadius = UDim.new(0, 6)
-
-local function createStatusLabel(yPos)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, -20, 0, 20);
-    lbl.Position = UDim2.new(0, 12, 0, yPos); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220);
-    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = content
-    return lbl
-end
-local stateLbl, harvestLbl, shovelLbl, keptLbl = createStatusLabel(85), createStatusLabel(110), createStatusLabel(135), createStatusLabel(160)
-
-task.spawn(function()
-    while isScriptRunning do
-        stateLbl.Text = "Status: " .. getCurrentFarmState()
-        harvestLbl.Text = "🎰 Harvest Queue: " .. harvestQueue:count()
-        shovelLbl.Text = "🔧 Shovel Queue: " .. shovelQueue:count()
-        keptLbl.Text = "💎 Kept Plant: " .. keptCount
-        task.wait(0.3) 
-    end
-end)
-
-autoToggleBtn.MouseButton1Click:Connect(function()
-    isAutoFarming = not isAutoFarming
-    autoToggleBtn.Text = isAutoFarming and "Auto-Farm: ON" or "Auto-Farm: OFF"
-    autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
-end)
-
-optimizeBtn.MouseButton1Click:Connect(function()
-    runGlobalOptimizationSweep()
-end)
-
-local expandedSize = frame.Size;
-local minimized = false
-minimize.MouseButton1Click:Connect(function()
-    minimized = not minimized; content.Visible = not minimized
-    frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
-    minimize.Text = minimized and "+" or "-"
-end)
-
-close.MouseButton1Click:Connect(function()
-    isAutoFarming = false; isScriptRunning = false 
-    plantAddedConn:Disconnect(); plantRemovedConn:Disconnect()
-    for plant in pairs(plantConnections) do cleanupPlant(plant) end
-    screenGui:Destroy()
-end)
-
--- ============================================================================
--- FRUIT MODULE (GROWTH ENGINE)
--- ============================================================================
-game:GetService("MaterialService")
-local v81 = {
- ["GrowData"] = {
-  ["GrowTickTime"] = nil,
-  ["GrowRate"] = 0.0047,
-  ["BaseWeight"] = 9,
-  ["GrowTickTime"] = NumberRange.new(4.8, 6)
- },
- ["InitFruit"] = function(p1, p2, p3) -- name: InitFruit
-  game:GetService("MaterialService")
-  local v4 = p3 or 1
-  local v5 = Random.new(p2)
-  local _ = p1.Base
-  local v6, v7 = Color3.fromRGB(51, 136, 5)
-  local v8, v9, v10 = v6:ToHSV()
-  local v11 = v7 or 0.05
-  local v12 = v8 + v5:NextNumber(-v11, v11)
-  local v13 = math.clamp(v12, 0, 0.99)
-  Color3.fromHSV(v13, v9, v10)
-  local v14 = p1.Moon
-  local v15 = p1.Leaves
-  local v16 = p1.Anthers
-  local v17 = Color3.fromRGB(255, 255, 255)
-  if v5:NextInteger(1, 3) == 1 then
-   v17 = v5:NextInteger(1, 2) == 1 and Color3.fromRGB(35, 55, 163) or Color3.fromRGB(34, 180, 248)
-  end
-  for _, v18 in v14:GetChildren() do
-   v18.Color = v17
-   v18.Parent = p1
-  end
-  v14:Destroy()
-  for _, v19 in v15:GetChildren() do
-   if v19:IsA("Model") then
-    local v20 = v19:GetPivot()
-    local v21 = CFrame.Angles
-    local v22 = v5:NextNumber(-10, 10)
-    local v23 = math.rad(v22)
-    local v24 = v5:NextNumber(-10, 10)
-    v19:PivotTo(v20 * v21(v23, 0, (math.rad(v24))))
-    for _, v25 in v19:GetChildren() do
-     v25.Parent = p1
-    end
-    v19:Destroy()
-   else
-    local v26 = v19:GetPivot()
-    local v27 = CFrame.Angles
-    local v28 = v5:NextNumber(-6, 6)
-    local v29 = math.rad(v28)
-    local v30 = v5:NextNumber(-20, 20)
-    v19:PivotTo(v26 * v27(v29, 0, (math.rad(v30))))
-    v19.Parent = p1
-   end
-  end
-  for _, v31 in v16:GetChildren() do
-   local v32 = v31:GetPivot()
-   local v33 = CFrame.Angles
-   local v34 = v5:NextNumber(-10, 10)
-   local v35 = math.rad(v34)
-   local v36 = v5:NextNumber(-15, 25)
-   v31:PivotTo(v32 * v33(v35, 0, (math.rad(v36))))
-   for _, v37 in v31:GetChildren() do
-    v37.Parent = p1
-   end
-  end
-  local v38 = v5:NextInteger(2, 4)
-  local v39 = p1["1"]
-  for v40 = 1, v38 do
-   local v41 = script.Leaf:Clone()
-   v41.Parent = p1
-   local v42 = 45 + 360 / v38 * (v40 * v5:NextNumber(0.9, 1, 1))
-   local v43 = v39.CFrame * CFrame.new(0, v39.Size.Y / 2.5, 0)
-   local v44 = CFrame.Angles
-   local v45 = math.rad(v42)
-   local v46 = v5:NextNumber(97.5, 110)
-   v41:PivotTo(v43 * v44(0, v45, (math.rad(v46))))
-   v41.Name = 2
-  end
-  v16:Destroy()
-  local v47 = v5:NextNumber(-0.1, 0.1)
-  for _, v48 in p1:GetChildren() do
-   local v49 = v48.Name
-   if tonumber(v49) and v48.Color ~= Color3.fromRGB(255, 255, 255) then
-    local v50, v51, v52 = v48.Color:ToHSV()
-    v48.Color = Color3.fromHSV(v50 + v47, v51, v52)
-   end
-  end
-  local v53 = v4 * 0.25 + 0.75
-  p1:ScaleTo(v53 + v53 ^ 3 * 1e-6)
-  p1:AddTag("InitializationComplete")
- end,
- ["BeginFruitGrowth"] = function(p_u_54) -- name: BeginFruitGrowth
-  local v_u_55 = p_u_54.PrimaryPart
-  local v_u_56 = {}
-  for _, v57 in p_u_54:QueryDescendants("BasePart") do
-   local v58 = v57.Name
-   local v59 = tonumber(v58)
-   if v59 then
-    local v60 = not v57:GetAttribute("DontShow")
-    local v61 = {}
-    for _, v62 in v57:GetChildren() do
-     if v62:IsA("Decal") or v62:IsA("Texture") then
-      local v63 = {
-       ["decal"] = v62,
-       ["originalTransparency"] = v62.Transparency
-      }
-      table.insert(v61, v63)
-      if v60 then
-       v62.Transparency = 1
-      end
-     end
-    end
-    local v64 = {
-     ["part"] = v57,
-     ["maxSize"] = v57.Size,
-     ["centerOffset"] = v_u_55.CFrame:ToObjectSpace(v57.CFrame),
-     ["partAge"] = v59,
-     ["decals"] = v61
-    }
-    table.insert(v_u_56, v64)
-    v57.CanCollide = false
-    if v60 then
-     v57.Transparency = 1
-    end
-   end
-  end
-  
-  local connection
-  local isFullyGrown = false
-
-  local function v75() -- name: updateGrowth
-   if isFullyGrown then return end
-   
-   local v65 = p_u_54:GetAttribute("Age") or 0
-   local v66 = p_u_54:GetAttribute("MaxAge") or 1
-   
-   if v65 >= v66 then
-    isFullyGrown = true
-    
-    for _, v68 in v_u_56 do
-     if not v68.part:GetAttribute("DontShow") then
-      v68.part.Size = v68.maxSize
-      v68.part.CFrame = v_u_55.CFrame * v68.centerOffset
-      v68.part.Transparency = v68.part:GetAttribute("OG_Transparency") or 0
-      v68.part.CanCollide = true
-      
-      for _, v73 in v68.decals do
-       v73.decal.Transparency = v73.originalTransparency
-      end
-     end
-    end
-    
-    if connection then
-     connection:Disconnect()
-     connection = nil
-    end
-   end
-  end
-  
-  connection = p_u_54:GetAttributeChangedSignal("Age"):Connect(v75)
-  v75()
- end,
- ["OnFullyGrown"] = function(p76) -- name: OnFullyGrown
-  local v77 = p76:GetAttribute("CorePartName")
-  if v77 then
-   local v78 = p76:FindFirstChild(v77)
-   local v79 = v78 and game.ServerStorage:FindFirstChild("Collect_PROX_Apple")
-   if v79 then
-    local v80 = v79:Clone()
-    v80.Name = "ProximityPrompt"
-    v80.Parent = v78
-   end
-  end
-  p76:AddTag("PlantGenerated")
- end,
- ["Extras"] = {
-  ["FruitType"] = "Corn",
-  ["Harvestable"] = true
- }
-}
-return v81
+        if getPlantPosition(plant) then return
