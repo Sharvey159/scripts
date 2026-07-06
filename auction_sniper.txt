@@ -1,18 +1,19 @@
-
 -- ========================================================================
--- AUCTION SNIPER v2.1
--- Configurable, Multi-Item, Debounce-Aware, Optimized Global Loop
+-- AUCTION WATCHER v1.1
+-- Real-time UI Monitor & Automated Purchaser (Dynamic Refresh Detection)
 -- ========================================================================
 
 local CONFIG = {
-	Debug = true, -- Set to true to enable detailed logging
-	Items = {
-		{
-			Name = "Super Watering Can (x3)",
-			TimerThreshold = 21,
-			PriceThreshold = nil -- Will only use TimerThreshold
-		}
-	}
+    ScanInterval = 1,
+    PurchaseDebounce = 10.5,
+    WebhookURL = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD", --[cite: 1]
+    Items = {
+        {
+            Name = "Super Watering Can (x3)",
+            MaxPrice = 0,
+            MaxDuration = 22
+        },
+    }
 }
 
 -- ========================================================================
@@ -20,277 +21,293 @@ local CONFIG = {
 -- ========================================================================
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
-local AuctioneerFlags = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Flags"):WaitForChild("AuctioneerFlags"))
+local request = request or http_request or (syn and syn.request) --[cite: 1]
+assert(request, "HTTP requests are not supported by this executor.")
 
-local monitoredLots = {} -- Dictionary containing active lots: { [LotFrame] = lotData }
-local lastPurchaseTime = 0
-local globalHeartbeat = nil
+-- State Tables
+AuctionLots = {} 
+local WatchedLots = {}
+local NotifiedFound = {}
+local NotifiedCondition = {}
+local LastPurchaseAttempt = {}
+
+local ScriptStartTime = os.clock()
+local LastHeaderTime = 0
+local LastHeaderText = ""
 
 -- ========================================================================
 -- HELPER FUNCTIONS
 -- ========================================================================
 
-local function debugLog(message)
-	if CONFIG.Debug then
-		print("[AuctionSniper] " .. message)
-	end
+-- Reusable Webhook Function[cite: 1]
+local function sendWebhook(title, description, color, fields)
+    if CONFIG.WebhookURL == "" then return end
+
+    task.spawn(function()
+        local embed = {
+            title = title,
+            description = description,
+            color = color or 3447003,
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+        if fields then
+            embed.fields = fields
+        end
+
+        local success, err = pcall(function()
+            request({
+                Url = CONFIG.WebhookURL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    embeds = { embed }
+                }),
+            })
+        end)
+
+        if not success then
+            warn("[Auction Watcher] Webhook failed:", err)
+        end
+    end)
 end
 
--- Safely fetch the dynamic game debounce to avoid detection/errors
-local function getDebounce()
-	local success, result = pcall(function()
-		return AuctioneerFlags.PurchaseDebounceSeconds:Get()
-	end)
-	return (success and type(result) == "number") and result or 0.5
+local function formatWebhookFields(itemName, lotId, price, duration)
+    return {
+        { name = "Item", value = tostring(itemName), inline = true },
+        { name = "Lot ID", value = tostring(lotId), inline = true },
+        { name = "Price", value = tostring(price) .. " ¢", inline = true },
+        { name = "Duration", value = tostring(duration) .. "s", inline = true }
+    }
 end
 
--- Normalize string for robust matching (lowercase, trim, collapse spaces)
+-- Normalizes string for robust matching[cite: 2]
 local function normalizeString(str)
-	if not str then return "" end
-	str = string.lower(str)
-	str = string.gsub(str, "^%s*(.-)%s*$", "%1") -- trim leading/trailing
-	str = string.gsub(str, "%s+", " ")          -- collapse multiple spaces
-	return str
+    if not str then return "" end
+    str = string.lower(str)
+    str = string.gsub(str, "^%s*(.-)%s*$", "%1")
+    str = string.gsub(str, "%s+", " ")
+    return str
 end
 
--- Convert string timers into comparable numbers
+-- Converts time strings like "12m 30s" into total seconds[cite: 2]
 local function parseTimerToSeconds(timeStr)
-	if not timeStr or timeStr == "--" then return 0 end
-	
-	local hrs, mins2 = string.match(timeStr, "(%d+)h (%d+)m")
-	if hrs and mins2 then return (tonumber(hrs) * 3600) + (tonumber(mins2) * 60) end
-	
-	local mins, secs = string.match(timeStr, "(%d+)m (%d+)s")
-	if mins and secs then return (tonumber(mins) * 60) + tonumber(secs) end
-	
-	local secsOnly = string.match(timeStr, "(%d+)s")
-	if secsOnly then return tonumber(secsOnly) end
-	
-	return 0 
+    if not timeStr or timeStr == "--" or string.find(timeStr, "Refreshing") then return 0 end
+    
+    local hrs, mins2 = string.match(timeStr, "(%d+)h (%d+)m")
+    if hrs and mins2 then return (tonumber(hrs) * 3600) + (tonumber(mins2) * 60) end
+    
+    local mins, secs = string.match(timeStr, "(%d+)m (%d+)s")
+    if mins and secs then return (tonumber(mins) * 60) + tonumber(secs) end
+    
+    local secsOnly = string.match(timeStr, "(%d+)s")
+    if secsOnly then return tonumber(secsOnly) end
+    
+    return 0 
 end
 
--- Extract time prioritizing internal attributes over UI text
-local function getTimeRemaining(lotFrame, mainFrame, timerLabel)
-	-- Check for direct remaining time attributes
-	local timeRemainingAttr = lotFrame:GetAttribute("TimeRemaining") or mainFrame:GetAttribute("TimeRemaining")
-	if type(timeRemainingAttr) == "number" then
-		return timeRemainingAttr
-	end
-
-	-- Check for expiration timestamp attributes
-	local expiresAt = lotFrame:GetAttribute("ExpiresAt") or lotFrame:GetAttribute("EndTime") 
-		or mainFrame:GetAttribute("ExpiresAt") or mainFrame:GetAttribute("EndTime")
-	if type(expiresAt) == "number" then
-		return math.max(0, expiresAt - os.time())
-	end
-	
-	-- Fallback to GUI parsing
-	return parseTimerToSeconds(timerLabel.Text)
-end
-
--- Parse abbreviations like "2.5M", "850K", and comma separated values
+-- Parses abbreviations like "2.5M" and strips commas[cite: 2]
 local function parsePriceText(text)
-	if type(text) ~= "string" then return nil end
-	text = text:gsub(",", "") -- Strip commas
-	
-	local valStr, suffix = string.match(string.lower(text), "([%d%.]+)([kmb]?)")
-	if not valStr then return nil end
-	
-	local val = tonumber(valStr)
-	if not val then return nil end
-	
-	if suffix == "k" then val = val * 1000
-	elseif suffix == "m" then val = val * 1000000
-	elseif suffix == "b" then val = val * 1000000000
-	end
-	
-	return val
+    if type(text) ~= "string" then return nil end
+    text = text:gsub(",", "") 
+    
+    local valStr, suffix = string.match(string.lower(text), "([%d%.]+)([kmb]?)")
+    if not valStr then return nil end
+    
+    local val = tonumber(valStr)
+    if not val then return nil end
+    
+    if suffix == "k" then val = val * 1000
+    elseif suffix == "m" then val = val * 1000000
+    elseif suffix == "b" then val = val * 1000000000
+    end
+    
+    return val
 end
 
--- Extract price prioritizing internal attributes over UI text for accuracy
-local function getPrice(lotFrame, mainFrame)
-	-- Check common hidden attributes first
-	local attrPrice = lotFrame:GetAttribute("Price") or lotFrame:GetAttribute("CurrentPrice") or lotFrame:GetAttribute("CurrentBid")
-	if not attrPrice then
-		attrPrice = mainFrame:GetAttribute("Price") or mainFrame:GetAttribute("CurrentPrice") or mainFrame:GetAttribute("CurrentBid")
-	end
-	
-	if type(attrPrice) == "number" then 
-		return attrPrice 
-	end
-
-	-- Fallback to UI text if no attributes exist, supporting abbreviations (2.5M, etc.)
-	local priceLabel = mainFrame:FindFirstChild("Price") or mainFrame:FindFirstChild("CurrentPrice")
-	if priceLabel and priceLabel:IsA("TextLabel") then
-		return parsePriceText(priceLabel.Text)
-	end
-	
-	return nil
-end
-
--- Find a matching config using normalized matching
+-- Matches lot item names against the configuration[cite: 2]
 local function getMatchedConfig(fullName)
-	local normalizedFullName = normalizeString(fullName)
-	for _, config in ipairs(CONFIG.Items) do
-		local normalizedConfigName = normalizeString(config.Name)
-		-- Use plain search (true) to prevent parenthesis from breaking pattern matching
-		if string.find(normalizedFullName, normalizedConfigName, 1, true) then
-			return config
-		end
-	end
-	return nil
+    local normalizedFullName = normalizeString(fullName)
+    for _, config in ipairs(CONFIG.Items) do
+        local normalizedConfigName = normalizeString(config.Name)
+        if string.find(normalizedFullName, normalizedConfigName, 1, true) then
+            return config
+        end
+    end
+    return nil
 end
 
--- Clean up a lot when it disappears or is sold
-local function cleanupLot(lotFrame, reason)
-	if monitoredLots[lotFrame] then
-		monitoredLots[lotFrame] = nil
-		debugLog("Stopped monitoring lot. Reason: " .. (reason or "Removed/Sold"))
-	end
-end
-
--- Execute the purchase utilizing the exact connections hooked to the button
+-- Executes the purchase safely by hooking the button's internal connections[cite: 2]
 local function attemptPurchase(buyButton)
-	if getconnections then
-		for _, conn in ipairs(getconnections(buyButton.Activated)) do
-			conn:Function() 
-		end
-	end
+    if getconnections then
+        for _, conn in ipairs(getconnections(buyButton.Activated)) do
+            conn:Function() 
+        end
+    end
 end
 
 -- ========================================================================
 -- CORE LOGIC
 -- ========================================================================
 
--- Single Global Monitor Loop
-local function startGlobalMonitor()
-	if globalHeartbeat then return end
-	globalHeartbeat = RunService.Heartbeat:Connect(function()
-		for lotFrame, data in pairs(monitoredLots) do
-			-- 1. Validation check
-			if not lotFrame:IsDescendantOf(game) or not lotFrame.Parent then
-				cleanupLot(lotFrame, "Despawned from UI")
-				continue
-			end
-
-			local timeRemaining = getTimeRemaining(lotFrame, data.MainFrame, data.TimerLabel)
-			
-			-- Only drop via text if the internal computation wasn't the exact source driving an expired value, 
-			-- but we use TimerLabel "--" as a reliable loading/invalid state check fallback.
-			if timeRemaining <= 0 and data.TimerLabel.Text ~= "--" then
-				cleanupLot(lotFrame, "Timer expired / Sold out")
-				continue
-			end
-
-			-- 2. State reading
-			local currentPrice = getPrice(lotFrame, data.MainFrame)
-			
-			local timerMet = false
-			if data.Config.TimerThreshold and timeRemaining > 0 and timeRemaining <= data.Config.TimerThreshold then
-				timerMet = true
-			end
-			
-			local priceMet = false
-			if data.Config.PriceThreshold and currentPrice and currentPrice <= data.Config.PriceThreshold then
-				priceMet = true
-			end
-
-			-- 3. Action execution (OR condition)
-			if timerMet or priceMet then
-				local now = os.clock()
-				local debounce = getDebounce()
-				
-				-- Strict debounce adherence
-				if now - lastPurchaseTime >= debounce then
-					lastPurchaseTime = now
-					
-					local triggerReason = timerMet and ("Timer ("..timeRemaining.."s)") or ("Price ("..tostring(currentPrice)..")")
-					debugLog(string.format("[!] SNIPING %s! Triggered by: %s. Debounce: %ss", data.Config.Name, triggerReason, tostring(debounce)))
-					
-					attemptPurchase(data.BuyButton)
-				end
-			end
-		end
-	end)
+local function performReset(reason)
+    table.clear(AuctionLots)
+    table.clear(WatchedLots)
+    table.clear(NotifiedFound)
+    table.clear(NotifiedCondition)
+    table.clear(LastPurchaseAttempt)
+    
+    sendWebhook(
+        "🔄 Script Reset",
+        "**Reason:** " .. reason .. "\nCleared all cached data and tracking tables to sync with game UI.",
+        0xE67E22
+    )
 end
 
--- Evaluate newly detected lots asynchronously to allow UI to render
-local function processNewLot(lotFrame)
-	if not lotFrame:IsA("Frame") or string.sub(lotFrame.Name, 1, 4) ~= "Lot_" then return end
-	if monitoredLots[lotFrame] then return end -- Prevent duplicates
-	
-	-- Yield briefly to ensure GUI sub-elements have populated
-	local innerFrame = lotFrame:WaitForChild("Frame", 3)
-	if not innerFrame then return end
-	local mainFrame = innerFrame:WaitForChild("Main_Frame", 3)
-	if not mainFrame then return end
-	
-	-- Build complete item name
-	local itemName = mainFrame:FindFirstChild("ItemName") and mainFrame.ItemName.Text or ""
-	local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
-	local subtitle = imageDisplay:GetAttribute("ItemToolTipSubtitle") or ""
-	local fullName = itemName .. " " .. subtitle
-	
-	local matchedConfig = getMatchedConfig(fullName)
-	if matchedConfig then
-		local buyButton = mainFrame:FindFirstChild("BuyButton")
-		local refreshIn = mainFrame:FindFirstChild("RefreshIn")
-		local timerLabel = refreshIn and (refreshIn:FindFirstChild("Timer") or refreshIn)
-		
-		if buyButton and timerLabel then
-			monitoredLots[lotFrame] = {
-				Config = matchedConfig,
-				MainFrame = mainFrame,
-				BuyButton = buyButton,
-				TimerLabel = timerLabel
-			}
-			debugLog("Started monitoring: " .. matchedConfig.Name)
-		end
-	end
+local function scanAuctionUI()
+    local playerGui = player:FindFirstChild("PlayerGui")
+    local auctionGui = playerGui and playerGui:FindFirstChild("Auction")
+    local frame = auctionGui and auctionGui:FindFirstChild("Frame")
+    local scrollFrame = frame and frame:FindFirstChild("ScrollingFrame")
+    local header = frame and frame:FindFirstChild("Header")
+    
+    if not scrollFrame or not header then return end
+
+    -- Detect Refresh via Header Text / Timer explicitly tied to the UI[cite: 3]
+    local headerTimerLabel = header:FindFirstChild("RefreshIn") and header.RefreshIn:FindFirstChild("Timer")
+    if headerTimerLabel then
+        local currentText = headerTimerLabel.Text
+        local isRefreshingText = string.find(currentText, "Refreshing") ~= nil
+        local wasRefreshingText = string.find(LastHeaderText, "Refreshing") ~= nil
+        local currentHeaderTime = parseTimerToSeconds(currentText)
+
+        -- Check 1: Header explicitly says "Refreshing..."[cite: 3]
+        if isRefreshingText and not wasRefreshingText then
+            performReset("Auction Refresh Detected ('Refreshing...' Status)")
+        -- Check 2: Countdown reset to its maximum value after being lower
+        elseif not isRefreshingText and LastHeaderTime > 0 and currentHeaderTime > LastHeaderTime + 30 then
+            performReset("Auction Refresh Detected (Timer Reset)")
+        end
+
+        LastHeaderText = currentText
+        LastHeaderTime = currentHeaderTime
+    end
+
+    local currentVisibleLots = {}
+
+    -- 1. Scan and Update Every Visible Row
+    for _, lotFrame in ipairs(scrollFrame:GetChildren()) do
+        if lotFrame:IsA("Frame") and string.sub(lotFrame.Name, 1, 4) == "Lot_" then
+            local lotId = lotFrame.Name
+            
+            local mainFrame = lotFrame:FindFirstChild("Frame") and lotFrame.Frame:FindFirstChild("Main_Frame")
+            if not mainFrame then continue end
+            
+            -- Extract Data
+            local itemName = mainFrame:FindFirstChild("ItemName") and mainFrame.ItemName.Text or "Unknown Item"
+            local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
+            local subtitle = imageDisplay:GetAttribute("ItemToolTipSubtitle") or ""
+            local fullName = normalizeString(itemName .. " " .. subtitle)
+            
+            local priceLabel = mainFrame:FindFirstChild("Price") or mainFrame:FindFirstChild("CurrentPrice")
+            local price = priceLabel and parsePriceText(priceLabel.Text) or 0
+            
+            local refreshIn = mainFrame:FindFirstChild("RefreshIn")
+            local timerLabel = refreshIn and (refreshIn:FindFirstChild("Timer") or refreshIn)
+            local duration = timerLabel and parseTimerToSeconds(timerLabel.Text) or 0
+            local buyButton = mainFrame:FindFirstChild("BuyButton")
+            
+            -- Store in global table
+            AuctionLots[lotId] = {
+                ItemName = itemName .. (subtitle ~= "" and " " .. subtitle or ""),
+                Price = price,
+                Duration = duration,
+                LastUpdated = os.clock(),
+                BuyButton = buyButton
+            }
+            
+            currentVisibleLots[lotId] = true
+        end
+    end
+
+    -- 2. Cleanup Disappeared Lots
+    for lotId, data in pairs(AuctionLots) do
+        if not currentVisibleLots[lotId] then
+            AuctionLots[lotId] = nil
+            WatchedLots[lotId] = nil
+            NotifiedFound[lotId] = nil
+            NotifiedCondition[lotId] = nil
+            LastPurchaseAttempt[lotId] = nil
+        end
+    end
+
+    -- 3. Watch Logic & Purchase Handling
+    for lotId, data in pairs(AuctionLots) do
+        local matchedConfig = getMatchedConfig(data.ItemName)
+        
+        if matchedConfig then
+            -- Item Found Webhook
+            if not NotifiedFound[lotId] then
+                WatchedLots[lotId] = { Config = matchedConfig }
+                NotifiedFound[lotId] = true
+                
+                sendWebhook(
+                    "👀 Item Found",
+                    "Started watching.\n\nConditions to snipe:\nTarget Price: <=" .. matchedConfig.MaxPrice .. " ¢\nTarget Time: <=" .. matchedConfig.MaxDuration .. "s",
+                    0x3498DB,
+                    formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
+                )
+            end
+
+            -- Purchase Condition Checking
+            if data.Price <= matchedConfig.MaxPrice or data.Duration <= matchedConfig.MaxDuration then
+                
+                -- Condition Reached Webhook
+                if not NotifiedCondition[lotId] then
+                    NotifiedCondition[lotId] = true
+                    sendWebhook(
+                        "🎯 Target Condition Reached",
+                        "Conditions met. Beginning purchase attempts.",
+                        0x2ECC71,
+                        formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
+                    )
+                end
+                
+                -- Purchase Loop with Fixed Debounce
+                local lastAttempt = LastPurchaseAttempt[lotId] or 0
+                if os.clock() - lastAttempt >= CONFIG.PurchaseDebounce then
+                    LastPurchaseAttempt[lotId] = os.clock()
+                    
+                    if data.BuyButton then
+                        sendWebhook(
+                            "🛒 Purchase Attempt Started",
+                            "Attempting to buy item.",
+                            0xF1C40F,
+                            formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
+                        )
+                        attemptPurchase(data.BuyButton)
+                    end
+                end
+            end
+        end
+    end
 end
 
 -- ========================================================================
 -- INITIALIZATION
 -- ========================================================================
 
-local function initScanner()
-	local playerGui = player:WaitForChild("PlayerGui", 10)
-	local auctionGui = playerGui and playerGui:WaitForChild("Auction", 10)
-	local scrollFrame = auctionGui and auctionGui:WaitForChild("Frame", 10) and auctionGui.Frame:WaitForChild("ScrollingFrame", 10)
-	
-	if not scrollFrame then
-		debugLog("Failed to locate Auction ScrollingFrame. UI might not be loaded.")
-		return
-	end
+sendWebhook(
+    "🚀 Auction Watcher Started",
+    "✅ Script is now online and monitoring the Auction UI.",
+    0x9B59B6
+)
 
-	debugLog("Initialization successful. Scanning for targets...")
-
-	-- Start the global loop once
-	startGlobalMonitor()
-
-	-- 1. Scan pre-existing lots
-	for _, lotFrame in ipairs(scrollFrame:GetChildren()) do
-		task.spawn(processNewLot, lotFrame)
-	end
-
-	-- 2. Bind to dynamically added lots
-	scrollFrame.ChildAdded:Connect(function(child)
-		task.spawn(processNewLot, child)
-	end)
-	
-	-- 3. Cleanup garbage collection
-	scrollFrame.ChildRemoved:Connect(function(child)
-		cleanupLot(child, "Removed from ScrollingFrame")
-	end)
-end
-
-print("=======================================")
-print(" AUCTION SNIPER v2.1 INITIATED")
-print(" Configured Targets: " .. #CONFIG.Items)
-print("=======================================")
-
-initScanner()
+task.spawn(function()
+    while task.wait(CONFIG.ScanInterval) do
+        pcall(scanAuctionUI)
+    end
+end)
