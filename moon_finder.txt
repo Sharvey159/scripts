@@ -499,6 +499,25 @@ local function removeKeptFruitState(fruitId)
     end
 end
 
+-- ============================================================================
+-- DYNAMIC THRESHOLD CALCULATOR
+-- ============================================================================
+local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
+    totalPlants = totalPlants or 165
+    maxW = maxW or 100
+    minW = minW or 60
+    
+    -- Failsafe for end-of-run
+    if currentKept >= totalPlants then return minW end
+    
+    -- Quadratic decay: (1 - (kept/total)^2)
+    -- This keeps standards high early and drops them aggressively at the end
+    local progressRatio = currentKept / totalPlants
+    local dynamicWeight = minW + (maxW - minW) * (1 - math.pow(progressRatio, 2))
+    
+    return dynamicWeight
+end
+
 local function processFruit(fruit, plant, isBaseline)
     if not fruit then return false end
     local name, id = fruit:GetAttribute("CorePartName"), fruit:GetAttribute("FruitId")
@@ -518,9 +537,12 @@ local function processFruit(fruit, plant, isBaseline)
         Timestamp = isBaseline and 0 or os.time(), 
         IsBaseline = isBaseline
     }
+
+    -- Now safely calls the function defined above
+    local targetWeight = getDynamicThreshold(keptCount, 165, 100, 60)
     
-    -- FIFO Producer: Push any trash fruit (< 100kg) to the sharedAction queue exactly once.
-    if weight < 100 then 
+    -- FIFO Producer: Push any trash fruit (< targetWeight) to the sharedAction queue exactly once.
+    if weight < targetWeight then 
         sharedActionQueue:push(fruitData)
     else
         if not keptFruitCache[id] then
@@ -606,7 +628,7 @@ local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); 
 titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v65"; title.TextSize = 14;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v66"; title.TextSize = 14;
 title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
 local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
 minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
