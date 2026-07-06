@@ -1,18 +1,36 @@
 -- ========================================================================
--- AUCTION WATCHER v1.1
--- Real-time UI Monitor & Automated Purchaser (Dynamic Refresh Detection)
+-- AUCTION WATCHER v2.0
+-- Real-time UI Monitor & Concurrent Automated Purchaser
 -- ========================================================================
 
 local CONFIG = {
     ScanInterval = 1,
     PurchaseDebounce = 10.5,
     WebhookURL = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD", --[cite: 1]
+    
     Items = {
-        {
-            Name = "Super Watering Can (x3)",
-            MaxPrice = 0,
-            MaxDuration = 22
-        },
+        ["Super Watering Can"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 22 },
+        ["Super Sprinkler"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 11 },
+
+        ["Hypno Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
+        ["Dragon's Breath"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
+        ["Venom Spitter"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Moon Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
+
+        ["Ghost Pepper"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Venus Flytrap"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+
+        ["Bamboo"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Mushroom"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+
+        ["Uncommon Seed Pack"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+
+        ["Bear Trap Crate"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Fence Crate"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Teleporter Pad Crate"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+        ["Conveyor Crate"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
+
+        ["Common Egg"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 0 },
     }
 }
 
@@ -30,9 +48,6 @@ assert(request, "HTTP requests are not supported by this executor.")
 -- State Tables
 AuctionLots = {} 
 local WatchedLots = {}
-local NotifiedFound = {}
-local NotifiedCondition = {}
-local LastPurchaseAttempt = {}
 
 local ScriptStartTime = os.clock()
 local LastHeaderTime = 0
@@ -42,7 +57,7 @@ local LastHeaderText = ""
 -- HELPER FUNCTIONS
 -- ========================================================================
 
--- Reusable Webhook Function[cite: 1]
+-- Reusable Webhook Function
 local function sendWebhook(title, description, color, fields)
     if CONFIG.WebhookURL == "" then return end
 
@@ -54,24 +69,18 @@ local function sendWebhook(title, description, color, fields)
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         }
 
-        if fields then
-            embed.fields = fields
-        end
+        if fields then embed.fields = fields end
 
         local success, err = pcall(function()
             request({
                 Url = CONFIG.WebhookURL,
                 Method = "POST",
                 Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({
-                    embeds = { embed }
-                }),
+                Body = HttpService:JSONEncode({ embeds = { embed } }),
             })
         end)
 
-        if not success then
-            warn("[Auction Watcher] Webhook failed:", err)
-        end
+        if not success then warn("[Auction Watcher] Webhook failed:", err) end
     end)
 end
 
@@ -84,16 +93,25 @@ local function formatWebhookFields(itemName, lotId, price, duration)
     }
 end
 
--- Normalizes string for robust matching[cite: 2]
+-- Normalizes string for robust matching, stripping decorators
 local function normalizeString(str)
     if not str then return "" end
     str = string.lower(str)
+    
+    -- Strip decorators and quantities
+    str = string.gsub(str, " ?%(x%d+%)", "") -- Removes "(x3)"
+    str = string.gsub(str, " x%d+", "")      -- Removes " x3"
+    str = string.gsub(str, "%b()", "")       -- Removes "(Limited)"
+    str = string.gsub(str, "%b[]", "")       -- Removes "[Special]"
+    
+    -- Trim and collapse spaces[cite: 1]
     str = string.gsub(str, "^%s*(.-)%s*$", "%1")
     str = string.gsub(str, "%s+", " ")
+    
     return str
 end
 
--- Converts time strings like "12m 30s" into total seconds[cite: 2]
+-- Converts time strings like "12m 30s" into total seconds[cite: 1]
 local function parseTimerToSeconds(timeStr)
     if not timeStr or timeStr == "--" or string.find(timeStr, "Refreshing") then return 0 end
     
@@ -109,7 +127,7 @@ local function parseTimerToSeconds(timeStr)
     return 0 
 end
 
--- Parses abbreviations like "2.5M" and strips commas[cite: 2]
+-- Parses abbreviations like "2.5M" and strips commas[cite: 1]
 local function parsePriceText(text)
     if type(text) ~= "string" then return nil end
     text = text:gsub(",", "") 
@@ -128,19 +146,21 @@ local function parsePriceText(text)
     return val
 end
 
--- Matches lot item names against the configuration[cite: 2]
+-- Matches lot item names against the configuration using normalized contains
 local function getMatchedConfig(fullName)
     local normalizedFullName = normalizeString(fullName)
-    for _, config in ipairs(CONFIG.Items) do
-        local normalizedConfigName = normalizeString(config.Name)
+    for configName, configData in pairs(CONFIG.Items) do
+        if not configData.Enabled then continue end
+        
+        local normalizedConfigName = normalizeString(configName)
         if string.find(normalizedFullName, normalizedConfigName, 1, true) then
-            return config
+            return configData, configName
         end
     end
-    return nil
+    return nil, nil
 end
 
--- Executes the purchase safely by hooking the button's internal connections[cite: 2]
+-- Executes the purchase safely by hooking the button's internal connections[cite: 1]
 local function attemptPurchase(buyButton)
     if getconnections then
         for _, conn in ipairs(getconnections(buyButton.Activated)) do
@@ -156,15 +176,72 @@ end
 local function performReset(reason)
     table.clear(AuctionLots)
     table.clear(WatchedLots)
-    table.clear(NotifiedFound)
-    table.clear(NotifiedCondition)
-    table.clear(LastPurchaseAttempt)
     
     sendWebhook(
         "🔄 Script Reset",
         "**Reason:** " .. reason .. "\nCleared all cached data and tracking tables to sync with game UI.",
         0xE67E22
-    )
+    ) --[cite: 1]
+end
+
+-- Independent Watcher Thread for a specific Lot ID
+local function startLotWatcher(lotId, configData, configName)
+    if WatchedLots[lotId] then return end
+    WatchedLots[lotId] = true
+
+    task.spawn(function()
+        local data = AuctionLots[lotId]
+        
+        -- Item Found Webhook fires exactly once
+        local priceTargetStr = configData.PriceThreshold > 0 and (configData.PriceThreshold .. "M ¢") or "Ignored"
+        local timeTargetStr = configData.TimerThreshold > 0 and (configData.TimerThreshold .. "s") or "Ignored"
+        
+        sendWebhook(
+            "👀 Item Found",
+            "Started watching: **" .. configName .. "**\n\nConditions to snipe:\nTarget Price: " .. priceTargetStr .. "\nTarget Time: " .. timeTargetStr,
+            0x3498DB,
+            formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
+        )
+
+        local conditionMet = false
+        local lastAttempt = 0
+        local targetPriceValue = configData.PriceThreshold * 1000000
+
+        -- Continuous purchase loop for this specific lot
+        while WatchedLots[lotId] and AuctionLots[lotId] do
+            local currentData = AuctionLots[lotId]
+            
+            local priceMet = (configData.PriceThreshold == 0) or (currentData.Price <= targetPriceValue)
+            local timerMet = (configData.TimerThreshold == 0) or (currentData.Duration <= configData.TimerThreshold)
+            
+            if priceMet and timerMet then
+                if not conditionMet then
+                    conditionMet = true
+                    sendWebhook(
+                        "🎯 Target Condition Reached",
+                        "Conditions met for " .. configName .. ". Beginning purchase attempts.",
+                        0x2ECC71,
+                        formatWebhookFields(currentData.ItemName, lotId, currentData.Price, currentData.Duration)
+                    )
+                end
+
+                if os.clock() - lastAttempt >= CONFIG.PurchaseDebounce then
+                    lastAttempt = os.clock()
+                    if currentData.BuyButton then
+                        sendWebhook(
+                            "🛒 Purchase Attempt Started",
+                            "Attempting to buy item.",
+                            0xF1C40F,
+                            formatWebhookFields(currentData.ItemName, lotId, currentData.Price, currentData.Duration)
+                        )
+                        attemptPurchase(currentData.BuyButton)
+                    end
+                end
+            end
+            
+            task.wait(0.1) -- Fast localized polling to prevent blocking
+        end
+    end)
 end
 
 local function scanAuctionUI()
@@ -176,7 +253,7 @@ local function scanAuctionUI()
     
     if not scrollFrame or not header then return end
 
-    -- Detect Refresh via Header Text / Timer explicitly tied to the UI[cite: 3]
+    -- Detect Refresh via Header Text / Timer explicitly tied to the UI[cite: 1]
     local headerTimerLabel = header:FindFirstChild("RefreshIn") and header.RefreshIn:FindFirstChild("Timer")
     if headerTimerLabel then
         local currentText = headerTimerLabel.Text
@@ -184,10 +261,10 @@ local function scanAuctionUI()
         local wasRefreshingText = string.find(LastHeaderText, "Refreshing") ~= nil
         local currentHeaderTime = parseTimerToSeconds(currentText)
 
-        -- Check 1: Header explicitly says "Refreshing..."[cite: 3]
+        -- Check 1: Header explicitly says "Refreshing..."[cite: 1]
         if isRefreshingText and not wasRefreshingText then
             performReset("Auction Refresh Detected ('Refreshing...' Status)")
-        -- Check 2: Countdown reset to its maximum value after being lower
+        -- Check 2: Countdown reset to its maximum value after being lower[cite: 1]
         elseif not isRefreshingText and LastHeaderTime > 0 and currentHeaderTime > LastHeaderTime + 30 then
             performReset("Auction Refresh Detected (Timer Reset)")
         end
@@ -198,7 +275,7 @@ local function scanAuctionUI()
 
     local currentVisibleLots = {}
 
-    -- 1. Scan and Update Every Visible Row
+    -- 1. Scan and Update Every Visible Row[cite: 1]
     for _, lotFrame in ipairs(scrollFrame:GetChildren()) do
         if lotFrame:IsA("Frame") and string.sub(lotFrame.Name, 1, 4) == "Lot_" then
             local lotId = lotFrame.Name
@@ -210,7 +287,7 @@ local function scanAuctionUI()
             local itemName = mainFrame:FindFirstChild("ItemName") and mainFrame.ItemName.Text or "Unknown Item"
             local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
             local subtitle = imageDisplay:GetAttribute("ItemToolTipSubtitle") or ""
-            local fullName = normalizeString(itemName .. " " .. subtitle)
+            local fullName = itemName .. (subtitle ~= "" and " " .. subtitle or "")
             
             local priceLabel = mainFrame:FindFirstChild("Price") or mainFrame:FindFirstChild("CurrentPrice")
             local price = priceLabel and parsePriceText(priceLabel.Text) or 0
@@ -220,9 +297,9 @@ local function scanAuctionUI()
             local duration = timerLabel and parseTimerToSeconds(timerLabel.Text) or 0
             local buyButton = mainFrame:FindFirstChild("BuyButton")
             
-            -- Store in global table
+            -- Store in global table to feed the concurrent watcher threads
             AuctionLots[lotId] = {
-                ItemName = itemName .. (subtitle ~= "" and " " .. subtitle or ""),
+                ItemName = fullName,
                 Price = price,
                 Duration = duration,
                 LastUpdated = os.clock(),
@@ -234,63 +311,19 @@ local function scanAuctionUI()
     end
 
     -- 2. Cleanup Disappeared Lots
-    for lotId, data in pairs(AuctionLots) do
+    for lotId, _ in pairs(AuctionLots) do
         if not currentVisibleLots[lotId] then
             AuctionLots[lotId] = nil
-            WatchedLots[lotId] = nil
-            NotifiedFound[lotId] = nil
-            NotifiedCondition[lotId] = nil
-            LastPurchaseAttempt[lotId] = nil
+            WatchedLots[lotId] = nil -- Setting this to nil safely kills the independent while loop
         end
     end
 
-    -- 3. Watch Logic & Purchase Handling
+    -- 3. Spawning Watcher Threads
     for lotId, data in pairs(AuctionLots) do
-        local matchedConfig = getMatchedConfig(data.ItemName)
-        
-        if matchedConfig then
-            -- Item Found Webhook
-            if not NotifiedFound[lotId] then
-                WatchedLots[lotId] = { Config = matchedConfig }
-                NotifiedFound[lotId] = true
-                
-                sendWebhook(
-                    "👀 Item Found",
-                    "Started watching.\n\nConditions to snipe:\nTarget Price: <=" .. matchedConfig.MaxPrice .. " ¢\nTarget Time: <=" .. matchedConfig.MaxDuration .. "s",
-                    0x3498DB,
-                    formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
-                )
-            end
-
-            -- Purchase Condition Checking
-            if data.Price <= matchedConfig.MaxPrice or data.Duration <= matchedConfig.MaxDuration then
-                
-                -- Condition Reached Webhook
-                if not NotifiedCondition[lotId] then
-                    NotifiedCondition[lotId] = true
-                    sendWebhook(
-                        "🎯 Target Condition Reached",
-                        "Conditions met. Beginning purchase attempts.",
-                        0x2ECC71,
-                        formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
-                    )
-                end
-                
-                -- Purchase Loop with Fixed Debounce
-                local lastAttempt = LastPurchaseAttempt[lotId] or 0
-                if os.clock() - lastAttempt >= CONFIG.PurchaseDebounce then
-                    LastPurchaseAttempt[lotId] = os.clock()
-                    
-                    if data.BuyButton then
-                        sendWebhook(
-                            "🛒 Purchase Attempt Started",
-                            "Attempting to buy item.",
-                            0xF1C40F,
-                            formatWebhookFields(data.ItemName, lotId, data.Price, data.Duration)
-                        )
-                        attemptPurchase(data.BuyButton)
-                    end
-                end
+        if not WatchedLots[lotId] then
+            local configData, configName = getMatchedConfig(data.ItemName)
+            if configData then
+                startLotWatcher(lotId, configData, configName)
             end
         end
     end
@@ -302,7 +335,7 @@ end
 
 sendWebhook(
     "🚀 Auction Watcher Started",
-    "✅ Script is now online and monitoring the Auction UI.",
+    "✅ v2.0 Script is now online and monitoring the Auction UI concurrently.",
     0x9B59B6
 )
 
