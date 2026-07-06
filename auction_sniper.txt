@@ -1,18 +1,18 @@
 -- ========================================================================
--- AUCTION WATCHER v3.0
+-- AUCTION WATCHER v3.1
 -- Real-time UI Monitor & Persistent Dashboard Engine (Object Lifecycle Mode)
 -- ========================================================================
 
 local CONFIG = {
     ScanInterval = 0.5,
     PurchaseDebounce = 10.5,
-    WebhookURL = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",[cite: 1]
+    WebhookURL = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",
     
     Items = {
         ["Super Watering Can"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 22 },
         ["Super Sprinkler"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 11 },
 
-        ["Hypno Bloom"] = { Enabled = trur, PriceThreshold = 0, TimerThreshold = 1 },
+        ["Hypno Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
         ["Dragon's Breath"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 0 },
         ["Venom Spitter"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 1 },
         ["Moon Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
@@ -42,7 +42,7 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
-local request = request or http_request or (syn and syn.request)[cite: 1]
+local request = request or http_request or (syn and syn.request)
 assert(request, "HTTP requests are not supported by this executor.")
 
 -- State Tables
@@ -58,25 +58,41 @@ local dashboardMessageId = nil
 -- HELPER FUNCTIONS
 -- ========================================================================
 
+-- Safe thread spawner using xpcall to log full stack traces
+local function safeSpawn(func, ...)
+    local args = {...}
+    task.spawn(function()
+        local success, err = xpcall(function()
+            func(unpack(args))
+        end, function(msg)
+            return debug.traceback(tostring(msg), 2)
+        end)
+        
+        if not success then
+            warn("[Auction Watcher Error] Thread crashed:\n" .. tostring(err))
+        end
+    end)
+end
+
 -- Normalizes string for robust matching, stripping quantities and decorations
 local function normalizeString(str)
     if not str then return "" end
     str = string.lower(str)
     
     -- Strip decorators and quantities
-    str = string.gsub(str, " ?%(x%d+%)", "") -- Removes "(x3)"
-    str = string.gsub(str, " x%d+", "")      -- Removes " x3"
-    str = string.gsub(str, "%b()", "")       -- Removes "(Limited)"
-    str = string.gsub(str, "%b[]", "")       -- Removes "[Special]"
+    str = string.gsub(str, " ?%(x%d+%)", "")
+    str = string.gsub(str, " x%d+", "")
+    str = string.gsub(str, "%b()", "")
+    str = string.gsub(str, "%b[]", "")
     
-    -- Trim and collapse spaces[cite: 1]
+    -- Trim and collapse spaces
     str = string.gsub(str, "^%s*(.-)%s*$", "%1")
     str = string.gsub(str, "%s+", " ")
     
     return str
 end
 
--- Converts time strings like "12m 30s" into total seconds[cite: 1]
+-- Converts time strings like "12m 30s" into total seconds
 local function parseTimerToSeconds(timeStr)
     if not timeStr or timeStr == "--" or string.find(timeStr, "Refreshing") then return 0 end
     
@@ -92,7 +108,7 @@ local function parseTimerToSeconds(timeStr)
     return 0 
 end
 
--- Parses abbreviations like "2.5M" and strips commas[cite: 1]
+-- Parses abbreviations like "2.5M" and strips commas
 local function parsePriceText(text)
     if type(text) ~= "string" then return nil end
     text = text:gsub(",", "") 
@@ -125,11 +141,13 @@ local function getMatchedConfig(fullName)
     return nil, nil
 end
 
--- Executes the purchase safely by hooking the button's internal connections[cite: 1]
+-- Executes the purchase safely by hooking the button's internal connections
 local function attemptPurchase(buyButton)
-    if getconnections then
+    if getconnections and buyButton then
         for _, conn in ipairs(getconnections(buyButton.Activated)) do
-            conn:Function() 
+            if conn.Function then
+                conn:Function() 
+            end
         end
     end
 end
@@ -139,7 +157,7 @@ end
 -- ========================================================================
 
 local function updateWebhookDashboard()
-    if CONFIG.WebhookURL == "" then return end
+    if not CONFIG.WebhookURL or CONFIG.WebhookURL == "" then return end
     
     local now = os.clock()
     local runtimeSecs = math.floor(now - ScriptStartTime)
@@ -153,18 +171,38 @@ local function updateWebhookDashboard()
     local totalCount = 0
     local itemStatesStr = ""
     
+    -- CREATE SNAPSHOT TO PREVENT RACE CONDITIONS DURING ITERATION
+    local watchersSnapshot = {}
     for lotId, watcher in pairs(ActiveWatchers) do
+        if watcher then
+            watchersSnapshot[lotId] = watcher
+        end
+    end
+    
+    -- ITERATE OVER SAFE SNAPSHOT
+    for lotId, watcher in pairs(watchersSnapshot) do
+        -- Skip if nil or destroyed during iteration
+        if type(watcher) ~= "table" or watcher.State == "Destroyed" then continue end
+        
+        -- Defensive indexing
+        local wState = watcher.State or "Unknown"
+        local wItemName = watcher.ItemName or "Unknown Item"
+        local wLotId = watcher.LotId or tostring(lotId)
+        local wPrice = watcher.Price or 0
+        local wTimer = watcher.Timer or 0
+        local wAttempts = watcher.Attempts or 0
+
         totalCount = totalCount + 1
-        if watcher.State == "Watching" then
+        if wState == "Watching" then
             watchCount = watchCount + 1
-        elseif watcher.State == "ConditionMet" or watcher.State == "Purchasing" then
+        elseif wState == "ConditionMet" or wState == "Purchasing" then
             purchaseCount = purchaseCount + 1
         end
         
-        local priceStr = watcher.Price >= 1000000 and string.format("%.2fM", watcher.Price / 1000000) or tostring(watcher.Price)
+        local priceStr = wPrice >= 1000000 and string.format("%.2fM", wPrice / 1000000) or tostring(wPrice)
         itemStatesStr = itemStatesStr .. string.format(
             "**%s**\n• State: `%s`\n• Lot ID: `%s`\n• Price: %s ¢\n• Timer: %ds\n• Attempts: %d\n\n",
-            watcher.ItemName, watcher.State, watcher.LotId, priceStr, watcher.Timer, watcher.Attempts
+            wItemName, wState, wLotId, priceStr, wTimer, wAttempts
         )
     end
     
@@ -190,38 +228,36 @@ local function updateWebhookDashboard()
 
     local payload = {
         embeds = {{
-            title = "⚡ Live Auction Watcher Dashboard (v3.0)",
+            title = "⚡ Live Auction Watcher Dashboard (v3.1)",
             description = embedDescription,
             color = 3447003,
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
         }},
-        allowed_mentions = { parse = {} } -- Never mention roles or users[cite: 2]
+        allowed_mentions = { parse = {} } 
     }
 
-    task.spawn(function()
+    safeSpawn(function()
         if not dashboardMessageId then
-            local postUrl = CONFIG.WebhookURL .. (string.find(CONFIG.WebhookURL, "%?") and "&wait=true" or "?wait=true")[cite: 2]
-            pcall(function()
-                local response = request({
-                    Url = postUrl,
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = HttpService:JSONEncode(payload)
-                })
-                if response and response.StatusCode == 200 then
-                    local data = HttpService:JSONDecode(response.Body)
-                    if data and data.id then dashboardMessageId = data.id end[cite: 2]
-                end
-            end)
+            local postUrl = CONFIG.WebhookURL .. (string.find(CONFIG.WebhookURL, "%?") and "&wait=true" or "?wait=true")
+            
+            local response = request({
+                Url = postUrl,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode(payload)
+            })
+            
+            if response and response.StatusCode == 200 then
+                local data = HttpService:JSONDecode(response.Body)
+                if data and data.id then dashboardMessageId = data.id end
+            end
         else
-            pcall(function()
-                request({
-                    Url = string.format("%s/messages/%s", CONFIG.WebhookURL, dashboardMessageId),[cite: 2]
-                    Method = "PATCH",[cite: 2]
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = HttpService:JSONEncode(payload)
-                })
-            end)
+            request({
+                Url = string.format("%s/messages/%s", CONFIG.WebhookURL, dashboardMessageId),
+                Method = "PATCH",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode(payload)
+            })
         end
     end)
 end
@@ -247,58 +283,76 @@ local function createWatcher(lotId, configData, configName)
     }
 
     function self:Update(price, duration, buyButton)
-        if not self.Running then return end
+        if not self.Running or self.State == "Destroyed" then return end
         self.Price = price
         self.Timer = duration
         self.BuyButton = buyButton
     end
 
     function self:Destroy()
-        if not self.Running then return end
+        -- Idempotent check ensures cleanup is only run once
+        if not self.Running or self.State == "Destroyed" then return end
+        
         self.State = "Cancelling"
         self.Running = false
+        
+        -- Dereference instances first
+        self.BuyButton = nil 
+        
+        -- Finally clear from global table
         ActiveWatchers[self.LotId] = nil
         self.State = "Destroyed"
     end
 
-    -- Run isolated runtime thread per Watcher
-    task.spawn(function()
+    -- Run isolated runtime thread per Watcher using safeSpawn
+    safeSpawn(function()
         self.State = "Watching"
-        local targetPriceValue = self.Config.PriceThreshold * 1000000
+        
+        -- Defensive config read
+        local wConfig = self.Config or { PriceThreshold = 0, TimerThreshold = 0 }
+        local targetPriceValue = (wConfig.PriceThreshold or 0) * 1000000
 
-        while self.Running do
+        while self.Running and self.State ~= "Destroyed" do
             -- Failsafe cancellation check
-            if not AuctionLots[self.LotId] then
+            local currentLotId = self.LotId
+            if not currentLotId or not AuctionLots[currentLotId] then
                 self:Destroy()
                 break
             end
 
-            local priceMet = (self.Config.PriceThreshold == 0) or (self.Price <= targetPriceValue)
-            local timerMet = (self.Config.TimerThreshold == 0) or (self.Timer <= self.Config.TimerThreshold)
+            -- Defensive value retrieval
+            local wPrice = self.Price or 0
+            local wTimer = self.Timer or 0
+
+            local priceMet = (wConfig.PriceThreshold == 0) or (wPrice <= targetPriceValue)
+            local timerMet = (wConfig.TimerThreshold == 0) or (wTimer <= (wConfig.TimerThreshold or 0))
 
             if priceMet and timerMet then
                 if self.State == "Watching" then
                     self.State = "ConditionMet"
                 end
 
-                if os.clock() - self.DebounceTimer >= CONFIG.PurchaseDebounce then
+                local currentDebounce = self.DebounceTimer or 0
+                if os.clock() - currentDebounce >= (CONFIG.PurchaseDebounce or 10.5) then
                     self.State = "Purchasing"
                     self.DebounceTimer = os.clock()
-                    self.Attempts = self.Attempts + 1
+                    self.Attempts = (self.Attempts or 0) + 1
                     
                     if self.BuyButton then
                         attemptPurchase(self.BuyButton)
                     end
                     
-                    if self.Running then
+                    if self.Running and self.State ~= "Destroyed" then
                         self.State = "ConditionMet"
                     end
                 end
             else
-                self.State = "Watching"
+                if self.State ~= "Destroyed" then
+                    self.State = "Watching"
+                end
             end
 
-            task.wait(0.1) -- Rapid polling to preserve sniper responsiveness without engine blocking
+            task.wait(0.1) 
         end
     end)
 
@@ -308,8 +362,9 @@ end
 
 -- Cleanly drops watchers cleanly and safely
 local function destroyWatcher(lotId)
+    if not lotId then return end
     local watcher = ActiveWatchers[lotId]
-    if watcher then
+    if type(watcher) == "table" and watcher.Destroy then
         watcher:Destroy()
     end
 end
@@ -320,11 +375,21 @@ end
 
 local function performReset(reason)
     table.clear(AuctionLots)
+    
+    -- Safe destruction array to prevent iteration mutation
+    local toDestroy = {}
     for lotId, watcher in pairs(ActiveWatchers) do
-        watcher:Destroy()
+        table.insert(toDestroy, watcher)
     end
+    
+    for _, watcher in ipairs(toDestroy) do
+        if type(watcher) == "table" and watcher.Destroy then
+            watcher:Destroy()
+        end
+    end
+    
     table.clear(ActiveWatchers)
-    LastHeaderText = "Resetting (" .. reason .. ")"
+    LastHeaderText = "Resetting (" .. tostring(reason) .. ")"
     updateWebhookDashboard()
 end
 
@@ -337,7 +402,6 @@ local function scanAuctionUI()
     
     if not scrollFrame or not header then return end
 
-    -- Detect Refresh explicitly tied to the UI[cite: 1]
     local headerTimerLabel = header:FindFirstChild("RefreshIn") and header.RefreshIn:FindFirstChild("Timer")
     if headerTimerLabel then
         local currentText = headerTimerLabel.Text
@@ -365,7 +429,6 @@ local function scanAuctionUI()
             local mainFrame = lotFrame:FindFirstChild("Frame") and lotFrame.Frame:FindFirstChild("Main_Frame")
             if not mainFrame then continue end
             
-            -- Extract Data Structures
             local itemName = mainFrame:FindFirstChild("ItemName") and mainFrame.ItemName.Text or "Unknown Item"
             local imageDisplay = mainFrame:FindFirstChild("ImageDisplay") or mainFrame
             local subtitle = imageDisplay:GetAttribute("ItemToolTipSubtitle") or ""
@@ -390,23 +453,29 @@ local function scanAuctionUI()
         end
     end
 
-    -- 2. Clean disappeared lots immediately
+    -- 2. Clean disappeared lots immediately (taking snapshot to prevent iteration mutation)
+    local deadLots = {}
     for lotId, _ in pairs(ActiveWatchers) do
         if not currentVisibleLots[lotId] then
-            destroyWatcher(lotId)
+            table.insert(deadLots, lotId)
         end
+    end
+    for _, lotId in ipairs(deadLots) do
+        destroyWatcher(lotId)
     end
 
     -- 3. Sync Scanner Data with Lifecycles
     for lotId, data in pairs(AuctionLots) do
         local watcher = ActiveWatchers[lotId]
-        if watcher then
+        if watcher and type(watcher) == "table" and watcher.Update then
             watcher:Update(data.Price, data.Duration, data.BuyButton)
         else
             local configData, configName = getMatchedConfig(data.ItemName)
             if configData then
                 local newWatcher = createWatcher(lotId, configData, configName)
-                newWatcher:Update(data.Price, data.Duration, data.BuyButton)
+                if newWatcher and type(newWatcher) == "table" and newWatcher.Update then
+                    newWatcher:Update(data.Price, data.Duration, data.BuyButton)
+                end
             end
         end
     end
@@ -420,15 +489,15 @@ end
 updateWebhookDashboard()
 
 -- Worker Thread 1: UI Scanner Loop
-task.spawn(function()
-    while task.wait(CONFIG.ScanInterval) do
-        pcall(scanAuctionUI)
+safeSpawn(function()
+    while task.wait(CONFIG.ScanInterval or 0.5) do
+        scanAuctionUI()
     end
 end)
 
 -- Worker Thread 2: Persistent Webhook Pipeline
-task.spawn(function()
+safeSpawn(function()
     while task.wait(5) do
-        pcall(updateWebhookDashboard)
+        updateWebhookDashboard()
     end
 end)
