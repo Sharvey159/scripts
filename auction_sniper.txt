@@ -10,7 +10,7 @@ local CONFIG = {
     
     Items = {
         ["Super Watering Can"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 22 },
-        ["Super Sprinkler"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 11 },
+        ["Super Sprinkler"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 11 },
 
         ["Hypno Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
         ["Dragon's Breath"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 0 },
