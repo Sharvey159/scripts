@@ -9,10 +9,10 @@ local CONFIG = {
     WebhookURL = "https://discord.com/api/webhooks/1520090710290731101/wBfz1Eg2q2nvSNMBYKeu0ivklrMD-7DtKpLa5zHShJbj6-Js2cfBIP_ynFrQkd9ZprYD",
     
     Items = {
-        ["Super Watering Can"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 22 },
-        ["Super Sprinkler"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 11 },
+        ["Super Watering Can"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 22 },
+        ["Super Sprinkler"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 12 },
 
-        ["Hypno Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
+        ["Hypno Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1},
         ["Dragon's Breath"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 0 },
         ["Venom Spitter"] = { Enabled = false, PriceThreshold = 0, TimerThreshold = 1 },
         ["Moon Bloom"] = { Enabled = true, PriceThreshold = 0, TimerThreshold = 1 },
