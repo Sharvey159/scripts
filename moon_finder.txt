@@ -1,6 +1,6 @@
 --[[
 =============================================================================
-Script Version: v68 (Memory Optimized & Continuous)
+Script Version: v69 (Memory Optimized & Continuous & Resolution Fix)
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
 Architecture: True Producer-Consumer FIFO Shared Queue Engine (O(1) Execution)
 =============================================================================
@@ -119,6 +119,7 @@ local function createQueue()
     }
 end
        
+local plantLookupCache = {}
 local plantConnections, keptFruitCache, keptFruitList, pendingVerification = {}, {}, {}, {}
 local fruitProcessingQueue, sharedActionQueue, webhookQueue = createQueue(), createQueue(), createQueue() 
 local keptCount = 0           
@@ -127,10 +128,25 @@ local keptCount = 0
 -- CORE FUNCTIONS & MEMORY RESOLUTION
 -- ============================================================================
 
--- Dynamic Instance Resolver to prevent strong references (Memory Fix)
+-- Dynamic Instance Resolver to prevent strong references (Memory Fix + ID Resolution)
 local function resolveFruitInstance(plantId, fruitId)
     if not plantId or not fruitId then return nil end
-    local plant = myPlot.Plants:FindFirstChild(tostring(plantId))
+    
+    local plant = plantLookupCache[plantId]
+    
+    -- Fallback scan if cache missed (rebuilds cache entry)
+    if not plant or plant.Parent == nil then
+        plant = nil
+        for _, p in ipairs(myPlot.Plants:GetChildren()) do
+            local pId = p:GetAttribute("PlantId") or p.Name
+            if pId == plantId then
+                plant = p
+                plantLookupCache[plantId] = p
+                break
+            end
+        end
+    end
+    
     if not plant then return nil end
     local fruitsFolder = plant:FindFirstChild("Fruits")
     if not fruitsFolder then return nil end
@@ -305,7 +321,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
 
     local payload = {
         embeds = {{
-            title = "⚡ Live Session Dashboard (v68)",
+            title = "⚡ Live Session Dashboard (v69)",
             description = embedDescription,
             color = 3447003,
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -688,6 +704,11 @@ local function setupPlant(plant)
     if plantConnections[plant] then return end
     plantConnections[plant] = {}
     
+    local plantId = plant:GetAttribute("PlantId") or plant.Name
+    if plantId then
+        plantLookupCache[plantId] = plant
+    end
+    
     task.spawn(function()
         local fruitsFolder = plant:FindFirstChild("Fruits")
         if not fruitsFolder then fruitsFolder = plant:WaitForChild("Fruits", 15) end
@@ -714,6 +735,11 @@ local function setupPlant(plant)
 end
 
 local function cleanupPlant(plant)
+    local plantId = plant:GetAttribute("PlantId") or plant.Name
+    if plantId then
+        plantLookupCache[plantId] = nil
+    end
+
     if plantConnections[plant] then 
         for _, c in ipairs(plantConnections[plant]) do c:Disconnect() end;
         plantConnections[plant] = nil 
@@ -744,7 +770,7 @@ local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); 
 titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v68"; title.TextSize = 14;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v69"; title.TextSize = 14;
 title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
 local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
 minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
@@ -1039,10 +1065,6 @@ task.spawn(function()
     end
 end)
 
--- ============================================================================
--- FRUIT MODULE (GROWTH ENGINE)
--- ============================================================================
--- (Skipped repeating the massive v81 module block from original as requested logic changes weren't needed there, but you should keep it intact at the bottom of your script exactly as it was)
 -- ============================================================================
 -- FRUIT MODULE (GROWTH ENGINE)
 -- ============================================================================
