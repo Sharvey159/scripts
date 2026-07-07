@@ -1,5 +1,5 @@
 --========================================================
--- SHARVEY SCRIPT MANAGER v2.0.0
+-- SHARVEY SCRIPT MANAGER v2.1.0
 --========================================================
 if not game:IsLoaded() then
     game.Loaded:Wait()
@@ -138,27 +138,56 @@ local function CreateScrollList(parent)
     return Scroll
 end
 
--- Component: Script Button
+-- Component: Script Button with Force Update
 local function CreateScriptButton(scriptInfo, parent, callbacks)
+    local ItemFrame = Instance.new("Frame")
+    ItemFrame.Size = UDim2.new(1, 0, 0, 34)
+    ItemFrame.BackgroundTransparency = 1
+    ItemFrame.Parent = parent
+
+    -- Main Load Button
     local Button = Instance.new("TextButton")
-    Button.Size = UDim2.new(1, 0, 0, 34)
+    Button.Size = UDim2.new(1, -38, 1, 0)
     Button.BackgroundColor3 = Theme.Panels
     Button.Text = scriptInfo.Name
     Button.TextColor3 = Theme.Text
     Button.Font = Enum.Font.GothamMedium
     Button.TextSize = 13
     Button.AutoButtonColor = false
-    Button.Parent = parent
+    Button.Parent = ItemFrame
     
     local Corner = Instance.new("UICorner")
     Corner.CornerRadius = UDim.new(0, 6)
     Corner.Parent = Button
     
+    -- Force Update Button
+    local UpdateBtn = Instance.new("TextButton")
+    UpdateBtn.Size = UDim2.new(0, 34, 1, 0)
+    UpdateBtn.Position = UDim2.new(1, -34, 0, 0)
+    UpdateBtn.BackgroundColor3 = Theme.Panels
+    UpdateBtn.Text = "🔄"
+    UpdateBtn.TextColor3 = Theme.Text
+    UpdateBtn.Font = Enum.Font.Gotham
+    UpdateBtn.TextSize = 14
+    UpdateBtn.AutoButtonColor = false
+    UpdateBtn.Parent = ItemFrame
+
+    local Corner2 = Instance.new("UICorner")
+    Corner2.CornerRadius = UDim.new(0, 6)
+    Corner2.Parent = UpdateBtn
+
     ApplyHover(Button)
+    ApplyHover(UpdateBtn)
     
     Button.MouseButton1Click:Connect(function()
         if callbacks.LoadScript then
-            callbacks.LoadScript(scriptInfo)
+            callbacks.LoadScript(scriptInfo, false) -- Load normally (from cache if exists)
+        end
+    end)
+
+    UpdateBtn.MouseButton1Click:Connect(function()
+        if callbacks.LoadScript then
+            callbacks.LoadScript(scriptInfo, true) -- Force update bypasses cache
         end
     end)
 end
@@ -282,7 +311,7 @@ function UI.Create(callbacks, registry)
 end
 
 --========================================================
--- MAIN SCRIPT LOGIC
+-- MAIN SCRIPT LOGIC WITH CACHING
 --========================================================
 
 local Config = {
@@ -319,34 +348,74 @@ local ScriptRegistry = {
     { Name = "Auction Sniper",           File = "auction_sniper.txt" }
 }
 
-local function LoadScript(scriptInfo)
+-- Utility function to create a safe file name
+local function GetSafeFileName(name)
+    return string.gsub(name, "[^%w%-_]", "") .. ".lua"
+end
+
+local function LoadScript(scriptInfo, forceUpdate)
     local url = scriptInfo.File
     
     if not string.match(url, "^https?://") then
         url = BASE_URL .. url
     end
     
-    local finalUrl = url
-    if string.find(finalUrl, "?") then
-        finalUrl = finalUrl .. "&t=" .. os.time()
-    else
-        finalUrl = finalUrl .. "?t=" .. os.time()
+    -- Ensure Cache Directory Exists
+    if not isfolder("SharveyCache") then
+        makefolder("SharveyCache")
     end
     
-    local success, err = pcall(function()
-        loadstring(game:HttpGet(finalUrl))()
+    local fileName = "SharveyCache/" .. GetSafeFileName(scriptInfo.Name)
+    local scriptContent = ""
+    
+    -- Cache Logic: Fetch new if forcing update, or if the file doesn't exist yet
+    if forceUpdate or not isfile(fileName) then
+        local finalUrl = url
+        
+        -- Bypass the internal HTTP cache by appending a random token (.ostime equivalent)
+        if string.find(finalUrl, "?") then
+            finalUrl = finalUrl .. "&t=" .. os.time()
+        else
+            finalUrl = finalUrl .. "?t=" .. os.time()
+        end
+        
+        local success, content = pcall(function()
+            return game:HttpGet(finalUrl)
+        end)
+        
+        if success and content then
+            writefile(fileName, content)
+            scriptContent = content
+            if forceUpdate then
+                print("Successfully force-updated and cached: " .. scriptInfo.Name)
+            end
+        else
+            warn("Failed to download script: " .. scriptInfo.Name .. "\n" .. tostring(content))
+            return -- Abort load if we failed to fetch
+        end
+    else
+        -- Load from our local cached file
+        local success, content = pcall(function()
+            return readfile(fileName)
+        end)
+        
+        if success then
+            scriptContent = content
+        else
+            warn("Failed to read cached file for: " .. scriptInfo.Name)
+            return
+        end
+    end
+    
+    -- Execute the retrieved script content
+    local execSuccess, err = pcall(function()
+        loadstring(scriptContent)()
     end)
     
-    if success then
+    if execSuccess then
         print("Loaded:\n" .. scriptInfo.Name)
     else
-        warn("Failed:\n" .. scriptInfo.Name .. "\n" .. tostring(err))
-    end
-end
-
-local function ReloadAllScripts()
-    for _, scriptInfo in ipairs(ScriptRegistry) do
-        LoadScript(scriptInfo)
+        warn("Failed to execute:\n" .. scriptInfo.Name .. "\n" .. tostring(err))
     end
 end
 
@@ -354,7 +423,7 @@ local function AutoLoadScripts()
     for _, scriptInfo in ipairs(ScriptRegistry) do
         local configKey = string.gsub(scriptInfo.Name, "%s+", "")
         if Config.AutoLoad[configKey] then
-            LoadScript(scriptInfo)
+            LoadScript(scriptInfo, false) -- Auto-load uses cached versions
         end
     end
 end
@@ -376,7 +445,7 @@ local Callbacks = {
 
 -- Create the UI completely decoupled from logic
 activeWindow = UI.Create(Callbacks, ScriptRegistry)
-activeWindow:SetTitle("Sharvey Script Manager v2.0.0")
+activeWindow:SetTitle("Sharvey Script Manager v2.1.0")
 
 -- Execute core mechanics
 AutoLoadScripts()
