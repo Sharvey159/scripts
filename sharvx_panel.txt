@@ -298,7 +298,7 @@ local Config = {
         WeatherWatcher = false,
         FruitHelper = false,
         StockWatcher = true,
-        AuctionSniper = true,
+        AuctionSniper = false,
     }
 }
 
