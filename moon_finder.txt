@@ -1,8 +1,8 @@
 --[[
 =============================================================================
-Script Version: v67
+Script Version: v68 (Memory Optimized & Continuous)
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
-Architecture: True Producer-Consumer FIFO Shared Queue Engine
+Architecture: True Producer-Consumer FIFO Shared Queue Engine (O(1) Execution)
 =============================================================================
 ]]
 
@@ -57,6 +57,7 @@ local isAutoFarming, isScriptRunning, isMaintaining, isEventActive = false, true
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
 local targetCycles = 10
 local notifiedLimitReached = false
+local triggerDashboardUpdate = false
 
 -- ============================================================================
 -- LIVE ANALYTICS DATA STRUCUTRES
@@ -65,23 +66,23 @@ local sessionStart = os.time()
 local dashboardMessageId = nil
 local totalHarvested, totalShoveled, totalCycles = 0, 0, 0
 local keptFruitTimestamps, cycleHistory = {}, {}
+local dashboardTextBuffer = {} 
 local cycleStartTime = os.time()
 
--- Refactored True FIFO Queue Engine (O(1) Execution)
+-- Refactored True FIFO Queue Engine with Automatic Compaction
 local function createQueue()
     return {
         items = {}, first = 1, last = 0, size = 0,
         inQueue = {}, 
         push = function(self, item) 
             if not item then return end
-            -- Allows pushing if the item has either a FruitId OR a raw instance reference
-            local key = item.FruitId or item.fruit
-            if not key or self.inQueue[key] then return end
+            local key = item.FruitId or item.Id
+            if key and self.inQueue[key] then return end
             
             self.last += 1
             self.items[self.last] = item 
             self.size += 1
-            self.inQueue[key] = true
+            if key then self.inQueue[key] = true end
         end,
         pop = function(self)
             if self.size == 0 then return nil end
@@ -93,17 +94,25 @@ local function createQueue()
             self.size -= 1
             
             if val then
-                local key = val.FruitId or val.fruit
-                if key then
-                    self.inQueue[key] = nil
-                end
+                local key = val.FruitId or val.Id
+                if key then self.inQueue[key] = nil end
             end
             
-            while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
-            if self.first > self.last then 
+            -- Memory Optimization: Automatic Compaction to prevent indefinite table growth
+            if self.first > 50000 then
+                local newItems = {}
+                local index = 1
+                for i = self.first, self.last do
+                    if self.items[i] ~= nil then
+                        newItems[index] = self.items[i]
+                        index += 1
+                    end
+                end
+                self.items = newItems
                 self.first = 1
-                self.last = 0 
+                self.last = index - 1
             end
+            
             return val
         end,
         count = function(self) return self.size end
@@ -115,8 +124,22 @@ local fruitProcessingQueue, sharedActionQueue, webhookQueue = createQueue(), cre
 local keptCount = 0           
 
 -- ============================================================================
--- CORE FUNCTIONS & OPTIMIZATION
+-- CORE FUNCTIONS & MEMORY RESOLUTION
 -- ============================================================================
+
+-- Dynamic Instance Resolver to prevent strong references (Memory Fix)
+local function resolveFruitInstance(plantId, fruitId)
+    if not plantId or not fruitId then return nil end
+    local plant = myPlot.Plants:FindFirstChild(tostring(plantId))
+    if not plant then return nil end
+    local fruitsFolder = plant:FindFirstChild("Fruits")
+    if not fruitsFolder then return nil end
+    
+    for _, f in ipairs(fruitsFolder:GetChildren()) do
+        if f:GetAttribute("FruitId") == fruitId then return f end
+    end
+    return nil
+end
 
 local FPSOptimizer = {}
 function FPSOptimizer.Optimize(instance)
@@ -214,121 +237,124 @@ local function getCurrentFarmState()
 end
 
 local function updateAnalyticsDashboard(latestFruitsText)
-    task.spawn(function()
-        local now = os.time()
-        local runtime = now - sessionStart
-  
-        -- Clean 5-minute window for velocity
-        local validTimestamps = {}
-        for _, ts in ipairs(keptFruitTimestamps) do
-            if now - ts <= 300 then table.insert(validTimestamps, ts) end
-        end
-        keptFruitTimestamps = validTimestamps
-        local fruitsInFiveMins = #keptFruitTimestamps
-       
-        -- Averages
-        local avgCycle = 0
-        if #cycleHistory > 0 then
-            local sum = 0
-            for _, d in ipairs(cycleHistory) do sum += d end
-            avgCycle = sum / #cycleHistory
-        end
-       
-        local hourlyRate = runtime > 0 and (keptCount / (runtime / 3600)) or 0
+    local now = os.time()
+    local runtime = now - sessionStart
+
+    -- Memory Optimized Cleanup: In-place removal instead of reallocation
+    while #keptFruitTimestamps > 0 and (now - keptFruitTimestamps[1] > 300) do
+        table.remove(keptFruitTimestamps, 1)
+    end
+    local fruitsInFiveMins = #keptFruitTimestamps
+   
+    local avgCycle = 0
+    if #cycleHistory > 0 then
+        local sum = 0
+        for _, d in ipairs(cycleHistory) do sum += d end
+        avgCycle = sum / #cycleHistory
+    end
+   
+    local hourlyRate = runtime > 0 and (keptCount / (runtime / 3600)) or 0
+    
+    local buckets = {}
+    for _, f in ipairs(keptFruitList) do
+        local lower = math.floor(f.Weight / 20) * 20
+        if lower < 100 then lower = 100 end 
         
-        -- Generate 20kg Buckets
-        local buckets = {}
-        for _, f in ipairs(keptFruitList) do
-            local lower = math.floor(f.Weight / 20) * 20
-            if lower < 100 then lower = 100 end 
-            
-            if not buckets[lower] then buckets[lower] = { total = 0, recent = 0 } end
-            buckets[lower].total += 1
-            
-            -- Only count recent additions if it wasn't a baseline scan
-            if not f.IsBaseline and (now - f.Timestamp <= 1800) then 
-                buckets[lower].recent += 1
+        if not buckets[lower] then buckets[lower] = { total = 0, recent = 0 } end
+        buckets[lower].total += 1
+        
+        if not f.IsBaseline and (now - f.Timestamp <= 1800) then 
+            buckets[lower].recent += 1
+        end
+    end
+    
+    local bucketKeys = {}
+    for k in pairs(buckets) do table.insert(bucketKeys, k) end
+    table.sort(bucketKeys)
+    
+    local bucketString = ""
+    for _, lower in ipairs(bucketKeys) do
+        local bData = buckets[lower]
+        local recentStr = bData.recent > 0 and string.format(" *(+%d in last 30m)*", bData.recent) or ""
+        bucketString = bucketString .. string.format("• **%dkg - %dkg:** %dx%s\n", lower, lower + 20, bData.total, recentStr)
+    end
+    if bucketString == "" then bucketString = "• *Awaiting high-yield fruits...*\n" end
+
+    local embedDescription = string.format(
+        "📊 **Live Farm Session Metrics**\n" ..
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
+        "⏱️ **Started:** <t:%d:R>\n" ..
+        "🚜 **Status:** %s\n" ..
+        "🌍 **World:** %s (%s)\n\n" ..
+        "📈 **Performance Analytics:**\n" ..
+        "• **Total Farming Cycles:** %d\n" ..
+        "• **Avg Cycle (Last 100):** %.2fs\n" ..
+        "• **Kept Fruits (Last 5m):** %d\n" ..
+        "• **Estimated Yield:** %.2f kept/hr\n\n" ..
+        "⚖️ **Yield Buckets (>= 100kg):**\n" ..
+        "%s\n" ..
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
+        "📋 **Latest Drops:**\n%s",
+        sessionStart,
+        getCurrentFarmState(),
+        Workspace:GetAttribute("ActivePhase") or "Unknown", Workspace:GetAttribute("ActiveWeather") or "None",
+        totalCycles, avgCycle, fruitsInFiveMins, hourlyRate,
+        bucketString,
+        (latestFruitsText and latestFruitsText ~= "") and latestFruitsText or "*Waiting for items...*"
+    )
+
+    local payload = {
+        embeds = {{
+            title = "⚡ Live Session Dashboard (v68)",
+            description = embedDescription,
+            color = 3447003,
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        }}
+    }
+
+    if not dashboardMessageId then
+        local postUrl = WEBHOOK_URL .. (string.find(WEBHOOK_URL, "?") and "&wait=true" or "?wait=true")
+        pcall(function()
+            local response = request({ Url = postUrl, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
+            if response and response.StatusCode == 200 then
+                local data = HttpService:JSONDecode(response.Body)
+                if data and data.id then dashboardMessageId = data.id end
             end
-        end
-        
-        local bucketKeys = {}
-        for k in pairs(buckets) do table.insert(bucketKeys, k) end
-        table.sort(bucketKeys)
-        
-        local bucketString = ""
-        for _, lower in ipairs(bucketKeys) do
-            local bData = buckets[lower]
-            local recentStr = bData.recent > 0 and string.format(" *(+%d in last 30m)*", bData.recent) or ""
-            bucketString = bucketString .. string.format("• **%dkg - %dkg:** %dx%s\n", lower, lower + 20, bData.total, recentStr)
-        end
-        if bucketString == "" then bucketString = "• *Awaiting high-yield fruits...*\n" end
-
-        local embedDescription = string.format(
-            "📊 **Live Farm Session Metrics**\n" ..
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-            "⏱️ **Started:** <t:%d:R>\n" ..
-            "🚜 **Status:** %s\n" ..
-            "🌍 **World:** %s (%s)\n\n" ..
-            "📈 **Performance Analytics:**\n" ..
-            "• **Total Farming Cycles:** %d\n" ..
-            "• **Avg Cycle (Last 100):** %.2fs\n" ..
-            "• **Kept Fruits (Last 5m):** %d\n" ..
-            "• **Estimated Yield:** %.2f kept/hr\n\n" ..
-            "⚖️ **Yield Buckets (>= 100kg):**\n" ..
-            "%s\n" ..
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-            "📋 **Latest Drops:**\n%s",
-            sessionStart,
-            getCurrentFarmState(),
-            Workspace:GetAttribute("ActivePhase") or "Unknown", Workspace:GetAttribute("ActiveWeather") or "None",
-            totalCycles, avgCycle, fruitsInFiveMins, hourlyRate,
-            bucketString,
-            (latestFruitsText and latestFruitsText ~= "") and latestFruitsText or "*Waiting for items...*"
-        )
-
-        local payload = {
-            embeds = {{
-                title = "⚡ Live Session Dashboard (v67)",
-                description = embedDescription,
-                color = 3447003,
-                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-            }}
-        }
-
-        if not dashboardMessageId then
-            local postUrl = WEBHOOK_URL .. (string.find(WEBHOOK_URL, "?") and "&wait=true" or "?wait=true")
-            pcall(function()
-                local response = request({ Url = postUrl, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
-                if response and response.StatusCode == 200 then
-                    local data = HttpService:JSONDecode(response.Body)
-                    if data and data.id then dashboardMessageId = data.id end
-                end
-            end)
-        else
-            pcall(function()
-                request({ Url = string.format("%s/messages/%s", WEBHOOK_URL, dashboardMessageId), Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
-            end)
-        end
-    end)
+        end)
+    else
+        pcall(function()
+            request({ Url = string.format("%s/messages/%s", WEBHOOK_URL, dashboardMessageId), Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
+        end)
+    end
 end
 
 -- ============================================================================
 -- WEBHOOK HELPER & MAINTENANCE
 -- ============================================================================
+local systemWebhookQueue = {}
 local function sendWebhook(url, title, body, color, mention)
-    task.spawn(function()
-        pcall(function()
-            request({
-                Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({
-                    content = mention or "", 
-                    allowed_mentions = { parse = { "users", "roles" } },
-                    embeds = {{ title = title, description = body, color = color or 3447003, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ") }},
-                }),
-            })
-        end)
-    end)
+    table.insert(systemWebhookQueue, {url = url, title = title, body = body, color = color, mention = mention})
 end
+
+-- Persistent thread for webhooks to prevent thread accumulation
+task.spawn(function()
+    while isScriptRunning do
+        if #systemWebhookQueue > 0 then
+            local hook = table.remove(systemWebhookQueue, 1)
+            pcall(function()
+                request({
+                    Url = hook.url, Method = "POST", Headers = { ["Content-Type"] = "application/json" },
+                    Body = HttpService:JSONEncode({
+                        content = hook.mention or "", 
+                        allowed_mentions = { parse = { "users", "roles" } },
+                        embeds = {{ title = hook.title, description = hook.body, color = hook.color or 3447003, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ") }},
+                    }),
+                })
+            end)
+        end
+        task.wait(0.2)
+    end
+end)
 
 local function placeSprinklerAt(position, sprinklerName, plotId)
     local tool = equipTool(sprinklerName)
@@ -410,18 +436,34 @@ local function runMaintenanceCycle()
 end
 
 -- ============================================================================
--- INDEPENDENT EVENT WATCHER & CONTINUOUS CLEANUP
+-- EVENT & PHASE WATCHERS
 -- ============================================================================
 
 local isLeaving = false
 local isEventMonitorActive = false
+local isSafePhaseActive, activeWeathers = false, {}
+local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
+
+local function enqueueFruit(plant, fruit, isBaseline)
+    task.spawn(function()
+        local id = fruit:GetAttribute("FruitId")
+        while not id and fruit.Parent do
+            task.wait(0.1)
+            id = fruit:GetAttribute("FruitId")
+        end
+        if id then
+            local plantId = plant:GetAttribute("PlantId") or plant.Name
+            fruitProcessingQueue:push({ FruitId = id, PlantId = plantId, isBaseline = isBaseline })
+        end
+    end)
+end
 
 local function forceCleanupScan()
     for _, plant in ipairs(myPlot.Plants:GetChildren()) do
         local fruitsFolder = plant:FindFirstChild("Fruits")
         if fruitsFolder then
             for _, fruit in ipairs(fruitsFolder:GetChildren()) do
-                fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false })
+                enqueueFruit(plant, fruit, false)
             end
         end
     end
@@ -431,18 +473,11 @@ local function startEventMonitor()
     if isEventMonitorActive then return end
     isEventMonitorActive = true
     task.spawn(function()
-        -- If Auto Cleanup is OFF, immediately perform a Force Cleanup
-        if not isAutoFarming then
-            forceCleanupScan()
-        end
-        
-        -- Continuously scan for newly spawned trash fruits while the event is running
+        if not isAutoFarming then forceCleanupScan() end
         while isEventActive and isScriptRunning do
             forceCleanupScan()
-            task.wait(5) -- Reasonable scan interval
+            task.wait(5)
         end
-        
-        -- Event Ends: Stop the continuous scanning loop and reset
         isEventMonitorActive = false
     end)
 end
@@ -458,9 +493,6 @@ local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     task.wait(0.5)
     pcall(function() player:Destroy() end)
 end
-
-local isSafePhaseActive, activeWeathers = false, {}
-local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
 
 local function evaluateEventState()
     local isAnySafeWeather = false
@@ -482,9 +514,69 @@ local function evaluateEventState()
             end
         end)
     end
-    updateAnalyticsDashboard()
+    triggerDashboardUpdate = true
 end
 
+-- Weather Values Tracker
+local WeatherValues = ReplicatedStorage:WaitForChild("WeatherValues", 10)
+if WeatherValues then
+    local weatherConnections = {}
+    
+    local function handleWeatherUpdate(weatherName, isPlaying)
+        if activeWeathers[weatherName] == isPlaying then return end
+        activeWeathers[weatherName] = isPlaying
+        
+        local endTime = WeatherValues:GetAttribute(weatherName .. "_EndTime") or 0
+        if isPlaying then
+            if not SAFE_WEATHER[weatherName] then
+                local remaining = math.max(0, endTime - os.time())
+                executeLeave(weatherName, remaining, CONFIG.WeatherWebhook, "<@" .. CONFIG.MyUserId .. ">")
+                return
+            else
+                local body = string.format("**Weather:** %s\n⏳ Ends: <t:%d:R>\n📅 Exact: <t:%d:F>", weatherName, endTime, endTime)
+                local mention = "<@" .. CONFIG.MyUserId .. ">"
+                if weatherName == "Sunburst" then mention = mention .. " <@&" .. CONFIG.SunburstRole .. ">" end
+                sendWebhook(CONFIG.WeatherWebhook, "🌦 Safe Weather Started", body, 0x00BFFF, mention)
+            end
+        else
+            if SAFE_WEATHER[weatherName] then
+                sendWebhook(CONFIG.WeatherWebhook, "🌦 Safe Weather Ended", "**Weather:** " .. weatherName .. " has ended.", 0x7F8C8D, nil)
+            end
+        end
+        evaluateEventState()
+    end
+    
+    local function watchWeather(weatherName)
+        local attr = weatherName .. "_Playing"
+        if weatherConnections[attr] then return end
+        
+        weatherConnections[attr] = WeatherValues:GetAttributeChangedSignal(attr):Connect(function()
+            handleWeatherUpdate(weatherName, WeatherValues:GetAttribute(attr) or false)
+        end)
+        
+        -- Run Initial Scan State
+        if WeatherValues:GetAttribute(attr) then handleWeatherUpdate(weatherName, true) end
+    end
+    
+    local function scanWeatherAttributes()
+        for attr in pairs(WeatherValues:GetAttributes()) do
+            local wName = attr:match("^(.*)_Playing$")
+            if wName and typeof(WeatherValues:GetAttribute(attr)) == "boolean" then 
+                watchWeather(wName) 
+            end
+        end
+    end
+    
+    scanWeatherAttributes()
+    task.spawn(function()
+        while isScriptRunning do 
+            task.wait(5) 
+            scanWeatherAttributes() 
+        end
+    end)
+end
+
+-- Phase Tracker
 local function isSafeMoon(w) return w and (string.find(string.lower(w), "blood") or string.find(string.lower(w), "mega")) end
 local function isSpecialMoonToAvoid(w) return w and not isSafeMoon(w) and (string.find(string.lower(w), "gold") or string.find(string.lower(w), "rainbow")) end
 
@@ -510,34 +602,36 @@ local function checkTimeCycle()
     elseif phase == "Sunset" then icon, title, color = "🌇", "🌇 Sunset", 0xE67E22
     elseif phase == "Night" then
         icon = "🌙"
-        if string.find(string.lower(weather), "blood") then title, color, mention = "🩸🌕 BLOOD MOON!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
-        elseif string.find(string.lower(weather), "mega") then title, color = "🔵🌕 MEGA MOON!", 0x3498DB
-        else 
-            title, color = "🌙 Night Begins", 0x2C3E50 
+        if string.find(string.lower(weather), "blood") then title, color, mention = "🩸🌕 BLOOD MOON HAS BEGUN!", 0xC70039, "<@&" .. CONFIG.BloodMoonRole .. ">"
+        elseif string.find(string.lower(weather), "mega") then title, color = "🔵🌕 MEGA MOON HAS BEGUN!", 0x3498DB
+        elseif string.find(string.lower(weather), "rainbow") then title, color = "🌈🌕 RAINBOW MOON HAS BEGUN!", 0x9B59B6
+        elseif string.find(string.lower(weather), "gold") then title, color = "🟡🌕 GOLD MOON HAS BEGUN!", 0xF1C40F
+        else title, color = "🌙 Night Begins", 0x2C3E50 
         end
     end
-    sendWebhook(CONFIG.PhaseWebhook, title, string.format("**Phase:** %s %s\n**Weather:** %s", icon, phase, weather), color, mention)
+    sendWebhook(CONFIG.PhaseWebhook, title, string.format("**Phase:** %s %s\n**Weather/Moon:** %s", icon, phase, weather), color, mention)
 end
 
 Workspace:GetAttributeChangedSignal("ActivePhase"):Connect(checkTimeCycle)
 Workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(checkTimeCycle)
 if Workspace:GetAttribute("ActivePhase") then checkTimeCycle() end
 
--- ============================================================================
--- FRUIT PROCESSING & QUEUE PRODUCER
--- ============================================================================
-local function removeKeptFruitState(fruitId)
-    if not fruitId or not keptFruitCache[fruitId] then return end
-    keptFruitCache[fruitId] = nil
-    keptCount -= 1
-    for i, f in ipairs(keptFruitList) do
-        if f.FruitId == fruitId then table.remove(keptFruitList, i) break end
-    end
-end
 
 -- ============================================================================
--- DYNAMIC THRESHOLD CALCULATOR
+-- FRUIT PROCESSING & DYNAMIC THRESHOLD
 -- ============================================================================
+local function removeKeptFruitState(fruitId)
+    if not fruitId then return end
+    if keptFruitCache[fruitId] then
+        keptFruitCache[fruitId] = nil
+        keptCount -= 1
+        for i, f in ipairs(keptFruitList) do
+            if f.FruitId == fruitId then table.remove(keptFruitList, i) break end
+        end
+    end
+    pendingVerification[fruitId] = nil
+end
+
 local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
     totalPlants = totalPlants or 165
     maxW = maxW or 100
@@ -551,12 +645,13 @@ local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
     return dynamicWeight
 end
 
-local function processFruit(fruit, plant, isBaseline)
-    if not fruit then return false end
-    local name, id = fruit:GetAttribute("CorePartName"), fruit:GetAttribute("FruitId")
-    local plantId = plant:GetAttribute("PlantId") or plant.Name
+local function processFruit(plantId, fruitId, isBaseline)
+    if not plantId or not fruitId then return false end
+    local fruit = resolveFruitInstance(plantId, fruitId)
+    if not fruit then return true end -- Already gone, don't requeue
     
-    if not id or not name or not plantId then return false end
+    local name = fruit:GetAttribute("CorePartName")
+    if not name then return false end 
     
     local ok, weight = pcall(function()
         return tonumber(FruitVisualizerController:CalculateFruitWeight(fruit) or (FruitVisualizerController.CalculatePlantWeight and FruitVisualizerController:CalculatePlantWeight(fruit)) or 0)
@@ -564,8 +659,8 @@ local function processFruit(fruit, plant, isBaseline)
     if not ok then weight = 0 end
     
     local fruitData = {
-        PlantId = plantId, FruitId = id, Name = name,
-        Weight = weight, Mutation = fruit:GetAttribute("Mutation") or "None", Instance = fruit,
+        PlantId = plantId, FruitId = fruitId, Name = name,
+        Weight = weight, Mutation = fruit:GetAttribute("Mutation") or "None", 
         Timestamp = isBaseline and 0 or os.time(), 
         IsBaseline = isBaseline
     }
@@ -575,8 +670,8 @@ local function processFruit(fruit, plant, isBaseline)
     if weight < targetWeight then 
         sharedActionQueue:push(fruitData)
     else
-        if not keptFruitCache[id] then
-            keptFruitCache[id] = true
+        if not keptFruitCache[fruitId] then
+            keptFruitCache[fruitId] = true
             keptCount += 1
             table.insert(keptFruitList, fruitData)
             if not isBaseline then
@@ -595,10 +690,7 @@ local function setupPlant(plant)
     
     task.spawn(function()
         local fruitsFolder = plant:FindFirstChild("Fruits")
-        if not fruitsFolder then
-            fruitsFolder = plant:WaitForChild("Fruits", 15)
-        end
-        
+        if not fruitsFolder then fruitsFolder = plant:WaitForChild("Fruits", 15) end
         if not fruitsFolder then 
             local conn
             conn = plant.ChildAdded:Connect(function(child)
@@ -611,13 +703,8 @@ local function setupPlant(plant)
             return 
         end
         
-        for _, fruit in ipairs(fruitsFolder:GetChildren()) do 
-            fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = true }) 
-        end
-        
-        table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) 
-            fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false }) 
-        end))
+        for _, fruit in ipairs(fruitsFolder:GetChildren()) do enqueueFruit(plant, fruit, true) end
+        table.insert(plantConnections[plant], fruitsFolder.ChildAdded:Connect(function(fruit) enqueueFruit(plant, fruit, false) end))
         
         table.insert(plantConnections[plant], fruitsFolder.ChildRemoved:Connect(function(fruit) 
             local id = fruit:GetAttribute("FruitId")
@@ -644,8 +731,9 @@ for _, plant in ipairs(myPlot.Plants:GetChildren()) do setupPlant(plant) end
 local plantAddedConn = myPlot.Plants.ChildAdded:Connect(setupPlant)
 local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 
+
 -- ============================================================================
--- MINIMAL UI & ANIMATION CONTROLLER
+-- MINIMAL UI
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui");
 screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
@@ -656,7 +744,7 @@ local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); 
 titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v67"; title.TextSize = 14;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v68"; title.TextSize = 14;
 title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
 local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
 minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
@@ -706,30 +794,16 @@ local function createProgressRow(yPos, titleText)
     container.Position = UDim2.new(0, 12, 0, yPos)
     container.BackgroundTransparency = 1
     container.Parent = content
-
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(0, 60, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = 13
-    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Text = titleText
+    lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220); lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Text = titleText
     lbl.Parent = container
-
     local barBg = Instance.new("Frame")
-    barBg.Size = UDim2.new(1, -65, 0, 14)
-    barBg.Position = UDim2.new(0, 65, 0.5, -7)
-    barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    barBg.Parent = container
+    barBg.Size = UDim2.new(1, -65, 0, 14); barBg.Position = UDim2.new(0, 65, 0.5, -7); barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20); barBg.Parent = container
     Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 4)
-
     local barFill = Instance.new("Frame")
-    barFill.Size = UDim2.new(0, 0, 1, 0)
-    barFill.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-    barFill.Parent = barBg
+    barFill.Size = UDim2.new(0, 0, 1, 0); barFill.BackgroundColor3 = Color3.fromRGB(50, 150, 50); barFill.Parent = barBg
     Instance.new("UICorner", barFill).CornerRadius = UDim.new(0, 4)
-
     return barFill
 end
 
@@ -763,20 +837,13 @@ cycleLimitInput.FocusLost:Connect(function()
     if val then
         targetCycles = val
     else
-        if cycleLimitInput.Text == "" then
-            targetCycles = math.huge
-        else
-            cycleLimitInput.Text = targetCycles == math.huge and "" or tostring(targetCycles)
-        end
+        if cycleLimitInput.Text == "" then targetCycles = math.huge
+        else cycleLimitInput.Text = targetCycles == math.huge and "" or tostring(targetCycles) end
     end
 end)
+optimizeBtn.MouseButton1Click:Connect(runGlobalOptimizationSweep)
 
-optimizeBtn.MouseButton1Click:Connect(function()
-    runGlobalOptimizationSweep()
-end)
-
-local expandedSize = frame.Size;
-local minimized = false
+local expandedSize = frame.Size; local minimized = false
 minimize.MouseButton1Click:Connect(function()
     minimized = not minimized; content.Visible = not minimized
     frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
@@ -790,7 +857,6 @@ close.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-
 -- ============================================================================
 -- CONSUMER THREADS (COMPETING CONSUMER ARCHITECTURE)
 -- ============================================================================
@@ -801,7 +867,8 @@ task.spawn(function()
         if (isAutoFarming or isEventActive) and not isMaintaining then
             local data = sharedActionQueue:pop() 
             if data then
-                if data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
+                local instance = resolveFruitInstance(data.PlantId, data.FruitId)
+                if instance and instance.Parent and not pendingVerification[data.FruitId] then
                     pendingVerification[data.FruitId] = true
                     
                     harvestBarFill.Size = UDim2.new(0, 0, 1, 0)
@@ -810,10 +877,10 @@ task.spawn(function()
                     pcall(function() Networking.Garden.CollectFruit:Fire(data.PlantId, data.FruitId or "") end)
                     
                     task.spawn(function()
-                        task.wait(VERIFICATION_DELAY)
+                        pcall(function() task.wait(VERIFICATION_DELAY) end)
+                        pendingVerification[data.FruitId] = nil
                         if isScriptRunning then
-                            pendingVerification[data.FruitId] = nil
-                            if data.Instance and data.Instance.Parent then 
+                            if resolveFruitInstance(data.PlantId, data.FruitId) then 
                                 sharedActionQueue:push(data) 
                             else 
                                 totalHarvested += 1 
@@ -825,9 +892,7 @@ task.spawn(function()
             else
                 task.wait(0.1)
             end
-        else 
-            task.wait(0.1) 
-        end
+        else task.wait(0.1) end
     end
 end)
 
@@ -837,7 +902,8 @@ task.spawn(function()
         if (isAutoFarming or isEventActive) and not isMaintaining then
             local data = sharedActionQueue:pop() 
             if data then
-                if data.Instance and data.Instance.Parent and not pendingVerification[data.FruitId] then
+                local instance = resolveFruitInstance(data.PlantId, data.FruitId)
+                if instance and instance.Parent and not pendingVerification[data.FruitId] then
                     pendingVerification[data.FruitId] = true
                     local tool = getShovelTool()
                     if tool then
@@ -847,10 +913,10 @@ task.spawn(function()
                         pcall(function() Networking.Shovel.UseShovel:Fire(data.PlantId, data.FruitId, tool:GetAttribute("Shovel"), tool) end)
                         
                         task.spawn(function()
-                            task.wait(VERIFICATION_DELAY)
+                            pcall(function() task.wait(VERIFICATION_DELAY) end)
+                            pendingVerification[data.FruitId] = nil
                             if isScriptRunning then
-                                pendingVerification[data.FruitId] = nil
-                                if data.Instance and data.Instance.Parent then 
+                                if resolveFruitInstance(data.PlantId, data.FruitId) then 
                                     sharedActionQueue:push(data) 
                                 else 
                                     totalShoveled += 1 
@@ -867,27 +933,30 @@ task.spawn(function()
             else
                 task.wait(0.1)
             end
-        else 
-            task.wait(0.1) 
-        end
+        else task.wait(0.1) end
     end
 end)
 
 -- Worker 3: Webhook Dashboard Engine
 task.spawn(function()
-    local lastTextOutput = ""
     while isScriptRunning do
         if webhookQueue:count() > 0 then
             local batchedFruits = {}
             while webhookQueue:count() > 0 do table.insert(batchedFruits, webhookQueue:pop()) end
             if #batchedFruits > 0 then
                 for _, f in ipairs(batchedFruits) do 
-                    lastTextOutput = string.format("• %s (%.2fkg) [%s]\n", f.Name, f.Weight, f.Mutation) .. lastTextOutput 
+                    -- Memory Optimized Buffer instead of string concatenations
+                    table.insert(dashboardTextBuffer, 1, string.format("• %s (%.2fkg) [%s]", f.Name, f.Weight, f.Mutation)) 
                 end
-                if string.len(lastTextOutput) > 600 then lastTextOutput = string.sub(lastTextOutput, 1, 600) .. "\n*Truncated...*" end
+                while #dashboardTextBuffer > 20 do table.remove(dashboardTextBuffer, #dashboardTextBuffer) end
             end
+            triggerDashboardUpdate = true
         end
-        updateAnalyticsDashboard(lastTextOutput)
+        
+        if triggerDashboardUpdate then
+            updateAnalyticsDashboard(table.concat(dashboardTextBuffer, "\n"))
+            triggerDashboardUpdate = false
+        end
         task.wait(4)
     end
 end)
@@ -937,14 +1006,12 @@ task.spawn(function()
             local processed = 0
             while fruitProcessingQueue:count() > 0 and processed < 75 do
                 local data = fruitProcessingQueue:pop()
-                if data and data.fruit and data.plant and data.fruit.Parent then 
-                    local success = processFruit(data.fruit, data.plant, data.isBaseline) 
+                if data then 
+                    local success = processFruit(data.PlantId, data.FruitId, data.isBaseline) 
                     
                     if not success then
                         task.delay(0.5, function()
-                            if isScriptRunning and data.fruit and data.fruit.Parent then
-                                fruitProcessingQueue:push(data)
-                            end
+                            if isScriptRunning then fruitProcessingQueue:push(data) end
                         end)
                     end
                 end
@@ -955,6 +1022,27 @@ task.spawn(function()
     end
 end)
 
+-- Memory Diagnostics Worker
+task.spawn(function()
+    while isScriptRunning do
+        task.wait(60)
+        if CONFIG.DebugMode then
+            print("\n=== [MoonFinder] Diagnostics ===")
+            print("Lua Heap:", math.floor(collectgarbage("count")), "KB")
+            print(string.format("Process Queue: %d (Idx: %d-%d)", fruitProcessingQueue:count(), fruitProcessingQueue.first, fruitProcessingQueue.last))
+            print(string.format("Shared Queue: %d (Idx: %d-%d)", sharedActionQueue:count(), sharedActionQueue.first, sharedActionQueue.last))
+            print("Kept Fruits Count:", keptCount)
+            local pCount = 0 for _ in pairs(pendingVerification) do pCount += 1 end
+            print("Stuck Verifications:", pCount)
+            print("=================================\n")
+        end
+    end
+end)
+
+-- ============================================================================
+-- FRUIT MODULE (GROWTH ENGINE)
+-- ============================================================================
+-- (Skipped repeating the massive v81 module block from original as requested logic changes weren't needed there, but you should keep it intact at the bottom of your script exactly as it was)
 -- ============================================================================
 -- FRUIT MODULE (GROWTH ENGINE)
 -- ============================================================================
