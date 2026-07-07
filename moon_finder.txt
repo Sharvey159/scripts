@@ -458,7 +458,7 @@ end
 local isLeaving = false
 local isEventMonitorActive = false
 local isSafePhaseActive, activeWeathers = false, {}
-local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true }
+local SAFE_WEATHER = { Rain = true, Sunburst = true, Starfall = true, Aurora = true, Rainbow = true, Lightning = true }
 
 local function enqueueFruit(plant, fruit, isBaseline)
     task.spawn(function()
