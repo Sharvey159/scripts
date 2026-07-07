@@ -650,8 +650,8 @@ end
 
 local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
     totalPlants = totalPlants or 165
-    maxW = maxW or 100
-    minW = minW or 60
+    maxW = maxW or 115
+    minW = minW or 100
     
     if currentKept >= totalPlants then return minW end
     
