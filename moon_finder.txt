@@ -1,6 +1,6 @@
 --[[
 =============================================================================
-Script Version: v65
+Script Version: v67
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
 Architecture: True Producer-Consumer FIFO Shared Queue Engine
 =============================================================================
@@ -55,6 +55,8 @@ local DEFAULT_RADIUS, DEFAULT_DELAY = 4, 0.5
 
 local isAutoFarming, isScriptRunning, isMaintaining, isEventActive = false, true, false, false 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
+local targetCycles = 10
+local notifiedLimitReached = false
 
 -- ============================================================================
 -- LIVE ANALYTICS DATA STRUCUTRES
@@ -286,7 +288,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
 
         local payload = {
             embeds = {{
-                title = "⚡ Live Session Dashboard (v65)",
+                title = "⚡ Live Session Dashboard (v67)",
                 description = embedDescription,
                 color = 3447003,
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -408,10 +410,43 @@ local function runMaintenanceCycle()
 end
 
 -- ============================================================================
--- INDEPENDENT EVENT WATCHER
+-- INDEPENDENT EVENT WATCHER & CONTINUOUS CLEANUP
 -- ============================================================================
 
 local isLeaving = false
+local isEventMonitorActive = false
+
+local function forceCleanupScan()
+    for _, plant in ipairs(myPlot.Plants:GetChildren()) do
+        local fruitsFolder = plant:FindFirstChild("Fruits")
+        if fruitsFolder then
+            for _, fruit in ipairs(fruitsFolder:GetChildren()) do
+                fruitProcessingQueue:push({ fruit = fruit, plant = plant, isBaseline = false })
+            end
+        end
+    end
+end
+
+local function startEventMonitor()
+    if isEventMonitorActive then return end
+    isEventMonitorActive = true
+    task.spawn(function()
+        -- If Auto Cleanup is OFF, immediately perform a Force Cleanup
+        if not isAutoFarming then
+            forceCleanupScan()
+        end
+        
+        -- Continuously scan for newly spawned trash fruits while the event is running
+        while isEventActive and isScriptRunning do
+            forceCleanupScan()
+            task.wait(5) -- Reasonable scan interval
+        end
+        
+        -- Event Ends: Stop the continuous scanning loop and reset
+        isEventMonitorActive = false
+    end)
+end
+
 local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     if isLeaving then return end
     isLeaving = true;
@@ -436,6 +471,7 @@ local function evaluateEventState()
     local currentlyActive = isSafePhaseActive or isAnySafeWeather
     if currentlyActive and not isEventActive then
         isEventActive = true
+        startEventMonitor()
     elseif not currentlyActive and isEventActive then
         isEventActive = false
         task.spawn(function()
@@ -507,11 +543,8 @@ local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
     maxW = maxW or 100
     minW = minW or 60
     
-    -- Failsafe for end-of-run
     if currentKept >= totalPlants then return minW end
     
-    -- Quadratic decay: (1 - (kept/total)^2)
-    -- This keeps standards high early and drops them aggressively at the end
     local progressRatio = currentKept / totalPlants
     local dynamicWeight = minW + (maxW - minW) * (1 - math.pow(progressRatio, 2))
     
@@ -523,7 +556,6 @@ local function processFruit(fruit, plant, isBaseline)
     local name, id = fruit:GetAttribute("CorePartName"), fruit:GetAttribute("FruitId")
     local plantId = plant:GetAttribute("PlantId") or plant.Name
     
-    -- Prevents instantly discarding items if attributes haven't loaded yet
     if not id or not name or not plantId then return false end
     
     local ok, weight = pcall(function()
@@ -538,10 +570,8 @@ local function processFruit(fruit, plant, isBaseline)
         IsBaseline = isBaseline
     }
 
-    -- Now safely calls the function defined above
     local targetWeight = getDynamicThreshold(keptCount, 165, 100, 60)
     
-    -- FIFO Producer: Push any trash fruit (< targetWeight) to the sharedAction queue exactly once.
     if weight < targetWeight then 
         sharedActionQueue:push(fruitData)
     else
@@ -563,14 +593,12 @@ local function setupPlant(plant)
     if plantConnections[plant] then return end
     plantConnections[plant] = {}
     
-    -- Wrapping in task.spawn ensures we don't stall the main loop
     task.spawn(function()
         local fruitsFolder = plant:FindFirstChild("Fruits")
         if not fruitsFolder then
             fruitsFolder = plant:WaitForChild("Fruits", 15)
         end
         
-        -- Fallback to catch it dynamically if it takes an extremely long time
         if not fruitsFolder then 
             local conn
             conn = plant.ChildAdded:Connect(function(child)
@@ -621,14 +649,14 @@ local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 -- ============================================================================
 local screenGui = Instance.new("ScreenGui");
 screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
-local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 255); frame.Position = UDim2.fromScale(0.02, 0.25);
+local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 305); frame.Position = UDim2.fromScale(0.02, 0.25);
 frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
 titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v66"; title.TextSize = 14;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v67"; title.TextSize = 14;
 title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
 local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
 minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
@@ -641,10 +669,22 @@ Instance.new("UICorner", close).CornerRadius = UDim.new(0, 4)
 local content = Instance.new("Frame"); content.BackgroundTransparency = 1; content.Position = UDim2.fromOffset(0, 30);
 content.Size = UDim2.new(1, 0, 1, -30); content.Parent = frame
 
-local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -20, 0, 30);
+local autoToggleBtn = Instance.new("TextButton"); autoToggleBtn.Size = UDim2.new(1, -65, 0, 30);
 autoToggleBtn.Position = UDim2.new(0, 10, 0, 10); autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50); autoToggleBtn.Text = "Auto-Farm: OFF"; autoToggleBtn.Font = Enum.Font.GothamBold;
-autoToggleBtn.TextSize = 14; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
+autoToggleBtn.TextSize = 13; autoToggleBtn.TextColor3 = Color3.new(1, 1, 1); autoToggleBtn.Parent = content;
 Instance.new("UICorner", autoToggleBtn).CornerRadius = UDim.new(0, 6)
+
+local cycleLimitInput = Instance.new("TextBox")
+cycleLimitInput.Size = UDim2.new(0, 45, 0, 30)
+cycleLimitInput.Position = UDim2.new(1, -55, 0, 10)
+cycleLimitInput.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+cycleLimitInput.Text = "10"
+cycleLimitInput.PlaceholderText = "∞"
+cycleLimitInput.Font = Enum.Font.GothamMedium
+cycleLimitInput.TextSize = 13
+cycleLimitInput.TextColor3 = Color3.new(1, 1, 1)
+cycleLimitInput.Parent = content
+Instance.new("UICorner", cycleLimitInput).CornerRadius = UDim.new(0, 6)
 
 local optimizeBtn = Instance.new("TextButton");
 optimizeBtn.Size = UDim2.new(1, -20, 0, 30);
@@ -698,14 +738,15 @@ local trashLbl = createStatusLabel(110)
 local harvestBarFill = createProgressRow(135, "Harvest:")
 local shovelBarFill = createProgressRow(160, "Shovel:")
 local keptLbl = createStatusLabel(185)
-
-frame.Size = UDim2.fromOffset(220, 280) 
+local cycleLbl = createStatusLabel(210)
 
 task.spawn(function()
     while isScriptRunning do
         stateLbl.Text = "Status: " .. getCurrentFarmState()
         trashLbl.Text = "Current Trash Fruits: " .. sharedActionQueue:count()
         keptLbl.Text = "Kept Fruits: " .. keptCount
+        local targetStr = targetCycles == math.huge and "∞" or tostring(targetCycles)
+        cycleLbl.Text = string.format("Cycles: %d / %s", totalCycles, targetStr)
         task.wait(0.3) 
     end
 end)
@@ -714,6 +755,20 @@ autoToggleBtn.MouseButton1Click:Connect(function()
     isAutoFarming = not isAutoFarming
     autoToggleBtn.Text = isAutoFarming and "Auto-Farm: ON" or "Auto-Farm: OFF"
     autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
+    if isAutoFarming then notifiedLimitReached = false end
+end)
+
+cycleLimitInput.FocusLost:Connect(function()
+    local val = tonumber(cycleLimitInput.Text)
+    if val then
+        targetCycles = val
+    else
+        if cycleLimitInput.Text == "" then
+            targetCycles = math.huge
+        else
+            cycleLimitInput.Text = targetCycles == math.huge and "" or tostring(targetCycles)
+        end
+    end
 end)
 
 optimizeBtn.MouseButton1Click:Connect(function()
@@ -852,10 +907,23 @@ task.spawn(function()
                 totalCycles += 1
                 table.insert(cycleHistory, os.time() - cycleStartTime)
                 if #cycleHistory > 100 then table.remove(cycleHistory, 1) end
-              
-                isMaintaining = true;
-                runMaintenanceCycle(); 
-                isMaintaining = false
+                
+                if totalCycles >= targetCycles then
+                    isAutoFarming = false
+                    autoToggleBtn.Text = "Auto-Farm: OFF"
+                    autoToggleBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+                    
+                    if not notifiedLimitReached then
+                        notifiedLimitReached = true
+                        local targetStr = targetCycles == math.huge and "∞" or tostring(targetCycles)
+                        local msg = string.format("Account: %s\nCompleted Cycles: %d/%s\n\nThe automation has stopped because the configured cycle limit has been reached.", player.Name, totalCycles, targetStr)
+                        sendWebhook(WEBHOOK_URL, "🛑 Cycle Limit Reached", msg, 0xE74C3C, "<@" .. CONFIG.MyUserId .. "> Cycle target reached.")
+                    end
+                else
+                    isMaintaining = true;
+                    runMaintenanceCycle(); 
+                    isMaintaining = false
+                end
             end
         end
         task.wait(0.5)
@@ -872,7 +940,6 @@ task.spawn(function()
                 if data and data.fruit and data.plant and data.fruit.Parent then 
                     local success = processFruit(data.fruit, data.plant, data.isBaseline) 
                     
-                    -- If attributes were not loaded yet, requeue and wait for replication
                     if not success then
                         task.delay(0.5, function()
                             if isScriptRunning and data.fruit and data.fruit.Parent then
