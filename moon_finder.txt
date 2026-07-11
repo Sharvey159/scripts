@@ -1,6 +1,6 @@
 --[[
 =============================================================================
-Script Version: v71 (Memory Optimized & Continuous & Resolution Fix)
+Script Version: v83 (Memory Optimized & Continuous & Resolution Fix & Trash Manager + Weight Filter)
 Description: Advanced Auto-Farm with Independent Event Detection, Safe Sweeps, Live Analytics Dashboard, Weight Buckets & Webhook Message Editing
 Architecture: True Producer-Consumer FIFO Shared Queue Engine (O(1) Execution)
 =============================================================================
@@ -9,6 +9,12 @@ Architecture: True Producer-Consumer FIFO Shared Queue Engine (O(1) Execution)
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
+
+-- ============================================================================
+-- TRASH SYSTEM CONFIGURATION
+-- ============================================================================
+local REMOVE_DELAY = 0.5 -- Seconds between each pickup
+local PLACE_DELAY = 0.5  -- Seconds between each placement
 
 -- --- SERVICES & REQUIRES ---
 local Players = game:GetService("Players")
@@ -35,7 +41,8 @@ local CONFIG = {
     PhaseWebhook = "https://discord.com/api/webhooks/1521577385122730205/4SCZjVoN91ZuCHDoQiZxTiA20X3lIefGWuPJ4Q1aQmY8OxAHs5etNv1LzcEapytl5H8w",
     MyUserId = "604609802835853333",
     BloodMoonRole = "1521573894383861851",
-    SunburstRole = "1522844669027815426"
+    SunburstRole = "1522844669027815426",
+    ENABLE_EVENT_AUTO_CLEANUP = true
 }
 
 local myPlot
@@ -55,21 +62,45 @@ local DEFAULT_RADIUS, DEFAULT_DELAY = 4, 0.5
 
 local isAutoFarming, isScriptRunning, isMaintaining, isEventActive = false, true, false, false 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1520269449251262494/kIdsK1mVMEVqvZblghzbB7NSIMF4KF9NB13phNN0eAqYFsoeymHaYIkWEoJFKTOiVjBj"
-local targetCycles = 10
+local targetCycles = 1000
 local notifiedLimitReached = false
 local triggerDashboardUpdate = false
+
+-- Forward declaration for the UI TextBox so background workers can read it
+local weightFilterInput 
 
 -- ============================================================================
 -- LIVE ANALYTICS DATA STRUCUTRES
 -- ============================================================================
 local sessionStart = os.time()
-local dashboardMessageId = nil
 local totalHarvested, totalShoveled, totalCycles = 0, 0, 0
 local keptFruitTimestamps, cycleHistory = {}, {}
 local dashboardTextBuffer = {} 
 local cycleStartTime = os.time()
 
+-- Dashboard Webhook Caching System
+local CACHE_FILE = "DashboardCache.json"
+
+local function loadDashboardCache()
+    if isfile and isfile(CACHE_FILE) then
+        local success, content = pcall(function()
+            return HttpService:JSONDecode(readfile(CACHE_FILE))
+        end)
+        if success and type(content) == "table" then return content end
+    end
+    return {}
+end
+
+local function saveDashboardCache(cache)
+    if writefile then
+        pcall(function() writefile(CACHE_FILE, HttpService:JSONEncode(cache)) end)
+    end
+end
+
 -- Refactored True FIFO Queue Engine with Automatic Compaction
+local dashboardCache = loadDashboardCache()
+local dashboardMessageId = dashboardCache[player.Name]
+
 local function createQueue()
     return {
         items = {}, first = 1, last = 0, size = 0,
@@ -86,6 +117,7 @@ local function createQueue()
         end,
         pop = function(self)
             if self.size == 0 then return nil end
+          
             while self.first <= self.last and self.items[self.first] == nil do self.first += 1 end
             if self.first > self.last then return nil end
             
@@ -108,6 +140,7 @@ local function createQueue()
                         index += 1
                     end
                 end
+           
                 self.items = newItems
                 self.first = 1
                 self.last = index - 1
@@ -123,6 +156,45 @@ local plantLookupCache = {}
 local plantConnections, keptFruitCache, keptFruitList, pendingVerification = {}, {}, {}, {}
 local fruitProcessingQueue, sharedActionQueue, webhookQueue = createQueue(), createQueue(), createQueue() 
 local keptCount = 0           
+
+-- ============================================================================
+-- FILTER PARSING FUNCTIONS
+-- ============================================================================
+local function ParseWeightCondition(text)
+    if not text then return false, nil, nil end
+    text = tostring(text):gsub("%s+", "")
+    if text == "" then return false, nil, nil end
+    
+    local op, valStr = text:match("^(>=?)(%d+%.?%d*)$")
+    if not op then op, valStr = text:match("^(<=?)(%d+%.?%d*)$") end
+    if not op then op, valStr = text:match("^(==?)(%d+%.?%d*)$") end
+    if not op then op, valStr = text:match("^(=)(%d+%.?%d*)$") end
+    
+    if not op then
+        valStr = text:match("^(%d+%.?%d*)$")
+        if valStr then op = "==" end
+    end
+    
+    if op and valStr then
+        local val = tonumber(valStr)
+        if val then
+            if op == "=" then op = "==" end
+            return true, op, val
+        end
+    end
+    
+    return false, nil, nil
+end
+
+local function MatchesWeightCondition(weight, operator, value)
+    if operator == ">" then return weight > value
+    elseif operator == ">=" then return weight >= value
+    elseif operator == "<" then return weight < value
+    elseif operator == "<=" then return weight <= value
+    elseif operator == "==" then return weight == value
+    end
+    return false
+end
 
 -- ============================================================================
 -- CORE FUNCTIONS & MEMORY RESOLUTION
@@ -244,7 +316,7 @@ end
 -- ============================================================================
 
 local function getCurrentFarmState()
-    if isEventActive then return "Event Cleanup Active!" end
+    if isEventActive and CONFIG.ENABLE_EVENT_AUTO_CLEANUP then return "Event Cleanup Active!" end
     if not isAutoFarming then return "Idle (Paused)" end
     if isMaintaining then return "Fixing Sprinklers & Watering..." end
     if fruitProcessingQueue:count() > 0 then return string.format("Processing Fruits (%d)", fruitProcessingQueue:count()) end
@@ -278,7 +350,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
         
         if not buckets[lower] then buckets[lower] = { total = 0, recent = 0 } end
         buckets[lower].total += 1
-        
+     
         if not f.IsBaseline and (now - f.Timestamp <= 1800) then 
             buckets[lower].recent += 1
         end
@@ -321,7 +393,7 @@ local function updateAnalyticsDashboard(latestFruitsText)
 
     local payload = {
         embeds = {{
-            title = "⚡ Live Session Dashboard (v71)",
+            title = "⚡ Live Session Dashboard (v83)",
             description = embedDescription,
             color = 3447003,
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -334,12 +406,22 @@ local function updateAnalyticsDashboard(latestFruitsText)
             local response = request({ Url = postUrl, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
             if response and response.StatusCode == 200 then
                 local data = HttpService:JSONDecode(response.Body)
-                if data and data.id then dashboardMessageId = data.id end
+                if data and data.id then 
+                    dashboardMessageId = data.id 
+                    dashboardCache[player.Name] = dashboardMessageId
+                    saveDashboardCache(dashboardCache)
+                end
             end
         end)
     else
         pcall(function()
-            request({ Url = string.format("%s/messages/%s", WEBHOOK_URL, dashboardMessageId), Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
+            local response = request({ Url = string.format("%s/messages/%s", WEBHOOK_URL, dashboardMessageId), Method = "PATCH", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
+            -- Safely handle if the user deleted the message manually in Discord
+            if response and response.StatusCode == 404 then
+                dashboardMessageId = nil
+                dashboardCache[player.Name] = nil
+                saveDashboardCache(dashboardCache)
+            end
         end)
     end
 end
@@ -489,9 +571,9 @@ local function startEventMonitor()
     if isEventMonitorActive then return end
     isEventMonitorActive = true
     task.spawn(function()
-        if not isAutoFarming then forceCleanupScan() end
+        if CONFIG.ENABLE_EVENT_AUTO_CLEANUP and not isAutoFarming then forceCleanupScan() end
         while isEventActive and isScriptRunning do
-            forceCleanupScan()
+            -- forceCleanupScan()
             task.wait(5)
         end
         isEventMonitorActive = false
@@ -500,7 +582,7 @@ end
 
 local function executeLeave(reason, remainingSeconds, webhookUrl, mention)
     if isLeaving then return end
-    isLeaving = true;
+    isLeaving = true
     isScriptRunning = false 
     local endTime = os.time() + remainingSeconds
     sendWebhook(webhookUrl, "🚨 Avoided Event", string.format("**Event:** %s\n🚪 **Action:** Leaving Server\n📅 **Ends:** <t:%d:R>", reason, endTime), 0xE74C3C, mention)
@@ -515,7 +597,7 @@ local function evaluateEventState()
     for wName, isActive in pairs(activeWeathers) do
         if isActive and SAFE_WEATHER[wName] then isAnySafeWeather = true break end
     end
-    
+   
     local currentlyActive = isSafePhaseActive or isAnySafeWeather
     if currentlyActive and not isEventActive then
         isEventActive = true
@@ -524,8 +606,8 @@ local function evaluateEventState()
         isEventActive = false
         task.spawn(function()
             if not isLeaving then 
-                isMaintaining = true;
-                runMaintenanceCycle();
+                isMaintaining = true
+                runMaintenanceCycle()
                 isMaintaining = false 
             end
         end)
@@ -648,17 +730,18 @@ local function removeKeptFruitState(fruitId)
     pendingVerification[fruitId] = nil
 end
 
-local function getDynamicThreshold(currentKept, totalPlants, maxW, minW)
-    totalPlants = totalPlants or 165
-    maxW = maxW or 115
-    minW = minW or 100
-    
-    if currentKept >= totalPlants then return minW end
-    
-    local progressRatio = currentKept / totalPlants
-    local dynamicWeight = minW + (maxW - minW) * (1 - math.pow(progressRatio, 2))
-    
-    return dynamicWeight
+local function getDynamicThreshold(currentKept)
+    local firstPhaseLimit = 100
+
+    if currentKept <= firstPhaseLimit then
+        -- Phase 1: 100kg -> 70kg
+        local progress = currentKept / firstPhaseLimit
+        return 70 + (100 - 70) * (1 - progress ^ 2)
+    else
+        -- Phase 2: 70kg -> 50kg
+        local progress = math.min((currentKept - firstPhaseLimit) / firstPhaseLimit, 1)
+        return 50 + (70 - 50) * (1 - progress ^ 2)
+    end
 end
 
 local function processFruit(plantId, fruitId, isBaseline)
@@ -681,9 +764,11 @@ local function processFruit(plantId, fruitId, isBaseline)
         IsBaseline = isBaseline
     }
 
-    local targetWeight = getDynamicThreshold(keptCount, 165, 115, 100)
+    local isKept = false
+    local targetWeight = getDynamicThreshold(keptCount)
+    isKept = (weight >= targetWeight)
     
-    if weight < targetWeight then 
+    if not isKept then 
         sharedActionQueue:push(fruitData)
     else
         if not keptFruitCache[fruitId] then
@@ -741,13 +826,13 @@ local function cleanupPlant(plant)
     end
 
     if plantConnections[plant] then 
-        for _, c in ipairs(plantConnections[plant]) do c:Disconnect() end;
+        for _, c in ipairs(plantConnections[plant]) do c:Disconnect() end
         plantConnections[plant] = nil 
     end
     local fFolder = plant:FindFirstChild("Fruits")
     if fFolder then 
         for _, f in ipairs(fFolder:GetChildren()) do 
-            local id = f:GetAttribute("FruitId");
+            local id = f:GetAttribute("FruitId")
             if id then removeKeptFruitState(id) end 
         end 
     end
@@ -759,18 +844,50 @@ local plantRemovedConn = myPlot.Plants.ChildRemoved:Connect(cleanupPlant)
 
 
 -- ============================================================================
+-- HELPER FUNCTIONS FOR PLACEMENT TRASH MANAGEMENT
+-- ============================================================================
+local function GetFruitWeightsFromTool(tool)
+    local attr = tool:GetAttribute("SavedFruitsFSON") or tool:GetAttribute("SavedFruitsJSON")
+    if not attr then return nil end
+    
+    local success, decoded = pcall(function() return HttpService:JSONDecode(attr) end)
+    if not success or type(decoded) ~= "table" then return nil end
+    
+    local weights = {}
+    for _, fruit in ipairs(decoded) do
+        if fruit.SizeMultiplier then
+            local weight = 9 * fruit.SizeMultiplier
+            table.insert(weights, weight)
+        end
+    end
+    return weights
+end
+
+local function PlantMatchesWeightFilter(tool, operator, value)
+    local weights = GetFruitWeightsFromTool(tool)
+    if not weights then return false end
+    
+    for _, w in ipairs(weights) do
+        if MatchesWeightCondition(w, operator, value) then
+            return true
+        end
+    end
+    return false
+end
+
+-- ============================================================================
 -- MINIMAL UI
 -- ============================================================================
-local screenGui = Instance.new("ScreenGui");
+local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AdminPanel"; screenGui.ResetOnSpawn = false; screenGui.Parent = playerGui
-local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 305); frame.Position = UDim2.fromScale(0.02, 0.25);
+local frame = Instance.new("Frame"); frame.Size = UDim2.fromOffset(220, 380); frame.Position = UDim2.fromScale(0.02, 0.25);
 frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35); frame.Active = true; frame.Draggable = true; frame.Parent = screenGui;
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45);
 titleBar.BorderSizePixel = 0; titleBar.Parent = frame; Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1;
-title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v71"; title.TextSize = 14;
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.fromOffset(8, 0); title.Font = Enum.Font.GothamBold; title.Text = "Auto-Farm v83"; title.TextSize = 14;
 title.TextXAlignment = Enum.TextXAlignment.Left; title.TextColor3 = Color3.new(1, 1, 1); title.Parent = titleBar
 local minimize = Instance.new("TextButton"); minimize.Size = UDim2.fromOffset(25, 25);
 minimize.Position = UDim2.new(1, -55, 0, 2); minimize.BackgroundColor3 = Color3.fromRGB(90, 90, 90); minimize.Text = "-"; minimize.Font = Enum.Font.GothamBold;
@@ -822,13 +939,18 @@ local function createProgressRow(yPos, titleText)
     container.Parent = content
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(0, 60, 1, 0)
-    lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220); lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Text = titleText
+    lbl.BackgroundTransparency = 1;
+    lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 13; lbl.TextColor3 = Color3.fromRGB(220, 220, 220); lbl.TextXAlignment = Enum.TextXAlignment.Left;
+    lbl.Text = titleText
     lbl.Parent = container
     local barBg = Instance.new("Frame")
-    barBg.Size = UDim2.new(1, -65, 0, 14); barBg.Position = UDim2.new(0, 65, 0.5, -7); barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20); barBg.Parent = container
+    barBg.Size = UDim2.new(1, -65, 0, 14);
+    barBg.Position = UDim2.new(0, 65, 0.5, -7); barBg.BackgroundColor3 = Color3.fromRGB(20, 20, 20);
+    barBg.Parent = container
     Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 4)
     local barFill = Instance.new("Frame")
-    barFill.Size = UDim2.new(0, 0, 1, 0); barFill.BackgroundColor3 = Color3.fromRGB(50, 150, 50); barFill.Parent = barBg
+    barFill.Size = UDim2.new(0, 0, 1, 0);
+    barFill.BackgroundColor3 = Color3.fromRGB(50, 150, 50); barFill.Parent = barBg
     Instance.new("UICorner", barFill).CornerRadius = UDim.new(0, 4)
     return barFill
 end
@@ -839,6 +961,263 @@ local harvestBarFill = createProgressRow(135, "Harvest:")
 local shovelBarFill = createProgressRow(160, "Shovel:")
 local keptLbl = createStatusLabel(185)
 local cycleLbl = createStatusLabel(210)
+
+-- ============================================================================
+-- TRASH PLANT MANAGEMENT (Remove / Restore)
+-- ============================================================================
+local trashState = {
+    removeActive = false,
+    removeCancelling = false,
+    placeActive = false,
+    placeCancelling = false
+}
+
+local RemoveTrashFilter = {
+    operator = nil,
+    value = nil
+}
+
+-- Initialize the forward declared TextBox
+weightFilterInput = Instance.new("TextBox")
+weightFilterInput.Size = UDim2.new(1, -20, 0, 30)
+weightFilterInput.Position = UDim2.new(0, 10, 1, -70)
+weightFilterInput.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+weightFilterInput.Text = ""
+weightFilterInput.PlaceholderText = "Weight Filter (e.g., >=100)"
+weightFilterInput.Font = Enum.Font.GothamMedium
+weightFilterInput.TextSize = 12
+weightFilterInput.TextColor3 = Color3.new(1, 1, 1)
+weightFilterInput.Parent = content
+Instance.new("UICorner", weightFilterInput).CornerRadius = UDim.new(0, 4)
+
+local buttonContainer = Instance.new("Frame")
+buttonContainer.Size = UDim2.new(1, -20, 0, 30)
+buttonContainer.Position = UDim2.new(0, 10, 1, -35)
+buttonContainer.BackgroundTransparency = 1
+buttonContainer.Parent = content
+
+local removeTrashBtn = Instance.new("TextButton")
+removeTrashBtn.Size = UDim2.new(0.5, -3, 1, 0)
+removeTrashBtn.Position = UDim2.new(0, 0, 0, 0)
+removeTrashBtn.BackgroundColor3 = Color3.fromRGB(170, 100, 50)
+removeTrashBtn.Text = "Remove Trash"
+removeTrashBtn.Font = Enum.Font.GothamBold
+removeTrashBtn.TextSize = 11
+removeTrashBtn.TextColor3 = Color3.new(1, 1, 1)
+removeTrashBtn.Parent = buttonContainer
+Instance.new("UICorner", removeTrashBtn).CornerRadius = UDim.new(0, 4)
+
+local placeTrashBtn = Instance.new("TextButton")
+placeTrashBtn.Size = UDim2.new(0.5, -3, 1, 0)
+placeTrashBtn.Position = UDim2.new(0.5, 3, 0, 0)
+placeTrashBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170)
+placeTrashBtn.Text = "Place Trash"
+placeTrashBtn.Font = Enum.Font.GothamBold
+placeTrashBtn.TextSize = 11
+placeTrashBtn.TextColor3 = Color3.new(1, 1, 1)
+placeTrashBtn.Parent = buttonContainer
+Instance.new("UICorner", placeTrashBtn).CornerRadius = UDim.new(0, 4)
+
+removeTrashBtn.MouseButton1Click:Connect(function()
+    -- Ignore rapid clicks while already in the process of cancelling
+    if trashState.removeCancelling then return end 
+    
+    -- If already running, initiate cancellation
+    if trashState.removeActive then
+        trashState.removeCancelling = true
+        removeTrashBtn.Text = "Cancelling..."
+        removeTrashBtn.BackgroundColor3 = Color3.fromRGB(150, 120, 40) -- Yellowish warning color
+        return
+    end
+    
+    local filterText = weightFilterInput.Text
+    local successParse, op, val = ParseWeightCondition(filterText)
+    if not successParse then
+        warn("Invalid weight filter. Aborting Remove Trash.")
+        weightFilterInput.Text = "Invalid Filter!"
+        task.delay(1.5, function()
+            if weightFilterInput.Text == "Invalid Filter!" then
+                weightFilterInput.Text = filterText
+            end
+        end)
+        return
+    end
+    
+    RemoveTrashFilter.operator = op
+    RemoveTrashFilter.value = val
+    
+    -- Update UI and set states for Active
+    trashState.removeActive = true
+    trashState.removeCancelling = false
+    removeTrashBtn.Text = "Stop Removing"
+    removeTrashBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+
+    task.spawn(function()
+        local success, err = pcall(function()
+            local plantsFolder = myPlot:FindFirstChild("Plants")
+            if not plantsFolder then return end
+            
+            local allPlants = plantsFolder:GetChildren()
+            
+            for _, plant in ipairs(allPlants) do
+                if trashState.removeCancelling then break end
+                
+                local pId = plant:GetAttribute("PlantId") or plant.Name
+                if pId then
+                    local hasMatchingFruit = false
+                    local fruitsFolder = plant:FindFirstChild("Fruits")
+                    
+                    if fruitsFolder then
+                        for _, fruit in ipairs(fruitsFolder:GetChildren()) do
+                            local ok, weight = pcall(function()
+                                return tonumber(FruitVisualizerController:CalculateFruitWeight(fruit) or (FruitVisualizerController.CalculatePlantWeight and FruitVisualizerController:CalculatePlantWeight(fruit)) or 0)
+                            end)
+                            if not ok then weight = 0 end
+                            
+                            if MatchesWeightCondition(weight, RemoveTrashFilter.operator, RemoveTrashFilter.value) then
+                                hasMatchingFruit = true
+                                break
+                            end
+                        end
+                    end
+                    
+                    if hasMatchingFruit then
+                        local successRemove = false
+                        
+                        while not successRemove and plant.Parent do
+                            if trashState.removeCancelling then break end
+                            
+                            Networking.PotPlacement.PickUpPottedPlant:Fire(pId)
+                            task.wait(REMOVE_DELAY)
+                            
+                            -- Verify that the plant has actually been removed from the plot
+                            if not plant.Parent then
+                                successRemove = true
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+        
+        if not success then warn("Remove Trash Operation Failed:", err) end
+        
+        -- Safely reset states and UI back to default
+        trashState.removeActive = false
+        trashState.removeCancelling = false
+        removeTrashBtn.Text = "Remove Trash"
+        removeTrashBtn.BackgroundColor3 = Color3.fromRGB(170, 100, 50)
+    end)
+end)
+
+placeTrashBtn.MouseButton1Click:Connect(function()
+    -- Ignore rapid clicks while already in the process of cancelling
+    if trashState.placeCancelling then return end 
+    
+    -- If already running, initiate cancellation
+    if trashState.placeActive then
+        trashState.placeCancelling = true
+        placeTrashBtn.Text = "Cancelling..."
+        placeTrashBtn.BackgroundColor3 = Color3.fromRGB(150, 120, 40) -- Yellowish warning color
+        return
+    end
+    
+    local rawText = weightFilterInput.Text
+    local filterText = rawText:match("^%s*(.-)%s*$") -- Trim whitespace
+    local placeAll = false
+    
+    if filterText == "" then
+        placeAll = true
+    else
+        local successParse, op, val = ParseWeightCondition(filterText)
+        if not successParse then
+            warn("Invalid weight filter. Aborting.")
+            weightFilterInput.Text = "Invalid Filter!"
+            task.delay(1.5, function()
+                if weightFilterInput.Text == "Invalid Filter!" then
+                    weightFilterInput.Text = rawText
+                end
+            end)
+            return
+        end
+        RemoveTrashFilter.operator = op
+        RemoveTrashFilter.value = val
+    end
+    
+    -- Update UI and set states for Active
+    trashState.placeActive = true
+    trashState.placeCancelling = false
+    placeTrashBtn.Text = "Stop Placing"
+    placeTrashBtn.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+
+    task.spawn(function()
+        local success, err = pcall(function()
+            local col2 = workspace:FindFirstChild("Gardens") 
+                and workspace.Gardens:FindFirstChild("Plot1") 
+                and workspace.Gardens.Plot1:FindFirstChild("Visual") 
+                and workspace.Gardens.Plot1.Visual:FindFirstChild("PlantAreaColumn2")
+
+            if not col2 then
+                warn("❌ [Debug] PlantAreaColumn2 cannot be found. Aborting placement.")
+                return
+            end
+
+            -- Use the reference position directly for all plants
+            local groundY = getPlayerGroundHeight()
+            local targetPos = Vector3.new(col2.Position.X, groundY, col2.Position.Z)
+
+            local keepPlacing = true
+            while keepPlacing do
+                if trashState.placeCancelling then break end
+                
+                local tool = nil
+                
+                -- Check for tools in Backpack or Character
+                for _, t in ipairs(player.Backpack:GetChildren()) do
+                    if t:GetAttribute("PottedPlant") and (placeAll or PlantMatchesWeightFilter(t, RemoveTrashFilter.operator, RemoveTrashFilter.value)) then tool = t; break end
+                end
+                
+                if not tool and player.Character then
+                    for _, t in ipairs(player.Character:GetChildren()) do
+                        if t:GetAttribute("PottedPlant") and (placeAll or PlantMatchesWeightFilter(t, RemoveTrashFilter.operator, RemoveTrashFilter.value)) then tool = t; break end
+                    end
+                end
+
+                if not tool then
+                    keepPlacing = false
+                    break
+                end
+                
+                local toolId = tool:GetAttribute("Id")
+                if not toolId then
+                    task.wait(0.5)
+                    continue
+                end
+                
+                local successPlace = false
+                while not successPlace and tool.Parent do
+                    if trashState.placeCancelling then break end
+                    
+                    Networking.PotPlacement.PlacePottedPlant:Fire(targetPos, 0, toolId)
+                    task.wait(PLACE_DELAY)
+                    
+                    -- Verify placement by checking if the tool was consumed
+                    if tool.Parent ~= player.Backpack and tool.Parent ~= player.Character then
+                        successPlace = true
+                    end
+                end
+            end
+        end)
+        
+        if not success then warn("Place Trash Operation Failed:", err) end
+        
+        -- Safely reset states and UI back to default
+        trashState.placeActive = false
+        trashState.placeCancelling = false
+        placeTrashBtn.Text = "Place Trash"
+        placeTrashBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 170)
+    end)
+end)
 
 task.spawn(function()
     while isScriptRunning do
@@ -851,12 +1230,24 @@ task.spawn(function()
     end
 end)
 
-autoToggleBtn.MouseButton1Click:Connect(function()
-    isAutoFarming = not isAutoFarming
+local function SetAutoFarm(state)
+    isAutoFarming = state
+
     autoToggleBtn.Text = isAutoFarming and "Auto-Farm: ON" or "Auto-Farm: OFF"
-    autoToggleBtn.BackgroundColor3 = isAutoFarming and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(170, 50, 50)
-    if isAutoFarming then notifiedLimitReached = false end
+    autoToggleBtn.BackgroundColor3 = isAutoFarming
+        and Color3.fromRGB(50, 150, 50)
+        or Color3.fromRGB(170, 50, 50)
+
+    if isAutoFarming then
+        notifiedLimitReached = false
+    end
+end
+
+autoToggleBtn.MouseButton1Click:Connect(function()
+    SetAutoFarm(not isAutoFarming)
 end)
+
+SetAutoFarm(not isAutoFarming)
 
 cycleLimitInput.FocusLost:Connect(function()
     local val = tonumber(cycleLimitInput.Text)
@@ -868,8 +1259,10 @@ cycleLimitInput.FocusLost:Connect(function()
     end
 end)
 optimizeBtn.MouseButton1Click:Connect(runGlobalOptimizationSweep)
+runGlobalOptimizationSweep()
 
-local expandedSize = frame.Size; local minimized = false
+local expandedSize = frame.Size;
+local minimized = false
 minimize.MouseButton1Click:Connect(function()
     minimized = not minimized; content.Visible = not minimized
     frame.Size = minimized and UDim2.fromOffset(expandedSize.X.Offset, 30) or expandedSize
@@ -890,7 +1283,7 @@ end)
 -- Worker 1: Harvest Engine
 task.spawn(function()
     while isScriptRunning do
-        if (isAutoFarming or isEventActive) and not isMaintaining then
+        if (isAutoFarming or (isEventActive and CONFIG.ENABLE_EVENT_AUTO_CLEANUP)) and not isMaintaining then
             local data = sharedActionQueue:pop() 
             if data then
                 local instance = resolveFruitInstance(data.PlantId, data.FruitId)
@@ -925,7 +1318,7 @@ end)
 -- Worker 2: Shovel Engine
 task.spawn(function()
     while isScriptRunning do
-        if (isAutoFarming or isEventActive) and not isMaintaining then
+        if (isAutoFarming or (isEventActive and CONFIG.ENABLE_EVENT_AUTO_CLEANUP)) and not isMaintaining then
             local data = sharedActionQueue:pop() 
             if data then
                 local instance = resolveFruitInstance(data.PlantId, data.FruitId)
@@ -991,7 +1384,7 @@ end)
 task.spawn(function()
     local wasProcessing = false
     while isScriptRunning do
-        if isEventActive then task.wait(1)
+        if isEventActive and CONFIG.ENABLE_EVENT_AUTO_CLEANUP then task.wait(1)
         elseif isAutoFarming then
             local totalTasks = sharedActionQueue:count() + fruitProcessingQueue:count()
             if totalTasks > 0 then
