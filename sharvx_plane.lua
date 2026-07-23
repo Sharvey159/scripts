@@ -151,7 +151,8 @@ local ScriptRegistry = {
     { Name = "Fruit Helper",             File = "fruit_helper.txt",           Default = false },
     { Name = "Stock Watcher",            File = "stock_watcher.txt",          Default = false },
     { Name = "Auction Sniper",           File = "auction_sniper.txt",         Default = false },
-    { Name = "Shop Watcher",             File = "ShopWatcher.lua",            Default = false }
+    { Name = "Shop Watcher",             File = "ShopWatcher.lua",            Default = false },
+    { Name = "Bamboo Farm",              File = "bamboo_farm.txt",            Default = false } -- < NEW INTEGRATION
 }
 
 --========================================================
